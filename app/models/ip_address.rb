@@ -8,12 +8,12 @@ class IpAddress < ApplicationRecord
   end
 
   def self.visible(user)
-    CurrentUser.is_admin? ? all : where.not(model_type: "Dmail")
+    user.is_admin? ? all : where.not(model_type: "Dmail")
   end
 
   def self.search(params)
     q = super
-    q = q.search_attributes(params, :user, :model_type, :model_id, :ip_addr)
+    q = q.search_attributes(params, :ip_addr)
     q.order(created_at: :desc)
   end
 
@@ -37,6 +37,10 @@ class IpAddress < ApplicationRecord
     group(:user_id).select("user_id, COUNT(*) AS count_all").reorder("count_all DESC, user_id")
   end
 
+  def lookup
+    @lookup ||= IpLookup.new(ip_addr)
+  end
+
   def to_s
     # include the subnet mask only when the IP denotes a subnet.
     (ip_addr.size > 1) ? ip_addr.to_string : ip_addr.to_s
@@ -46,8 +50,8 @@ class IpAddress < ApplicationRecord
     true
   end
 
-  def html_data_attributes
-    super & attributes.keys.map(&:to_sym)
+  def self.searchable_includes
+    [:user, :model]
   end
 
   def self.available_includes

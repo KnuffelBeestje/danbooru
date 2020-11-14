@@ -1,20 +1,19 @@
 require 'digest/sha1'
 
 class Dmail < ApplicationRecord
-
+  validate :validate_sender_is_not_limited, on: :create
   validates_presence_of :title, :body, on: :create
-  validate :validate_sender_is_not_banned, on: :create
 
   belongs_to :owner, :class_name => "User"
   belongs_to :to, :class_name => "User"
   belongs_to :from, :class_name => "User"
-  has_many :moderation_reports, as: :model
+  has_many :moderation_reports, as: :model, dependent: :destroy
 
   before_create :autoreport_spam
   after_save :update_unread_dmail_count
+  after_destroy :update_unread_dmail_count
   after_commit :send_email, on: :create
 
-  api_attributes including: [:key]
   deletable
 
   scope :read, -> { where(is_read: true) }
@@ -101,7 +100,7 @@ class Dmail < ApplicationRecord
     def search(params)
       q = super
 
-      q = q.search_attributes(params, :to, :from, :is_read, :is_deleted, :title, :body)
+      q = q.search_attributes(params, :is_read, :is_deleted, :title, :body)
       q = q.text_attribute_matches(:title, params[:title_matches])
       q = q.text_attribute_matches(:body, params[:message_matches], index_column: :message_index)
 
@@ -121,12 +120,7 @@ class Dmail < ApplicationRecord
     end
 
     def valid_key?(key)
-      decoded_id = verifier.verified(key)
-      id == decoded_id
-    end
-
-    def visible_to?(user, key)
-      owner_id == user.id || valid_key?(key)
+      id == verifier.verified(key)
     end
   end
 
@@ -138,19 +132,13 @@ class Dmail < ApplicationRecord
     unread.update(is_read: true)
   end
 
-  def validate_sender_is_not_banned
-    if from.try(:is_banned?)
-      errors[:base] << "Sender is banned and cannot send messages"
-    end
-  end
-
   def quoted_body
     "[quote]\n#{from.pretty_name} said:\n\n#{body}\n[/quote]\n\n"
   end
 
   def send_email
-    if is_recipient? && !is_deleted? && to.receive_email_notifications? && to.email =~ /@/
-      UserMailer.dmail_notice(self).deliver_now
+    if is_recipient? && !is_deleted? && to.receive_email_notifications? && to.can_receive_email?
+      UserMailer.dmail_notice(self).deliver_later
     end
   end
 
@@ -166,6 +154,14 @@ class Dmail < ApplicationRecord
     owner == to
   end
 
+  def validate_sender_is_not_limited
+    return if from.blank? || from.is_gold?
+
+    if from.dmails.where("created_at > ?", 1.hour.ago).group(:to).reorder(nil).count.size >= 10
+      errors[:base] << "You can't send dmails to more than 10 users per hour"
+    end
+  end
+
   def autoreport_spam
     if is_recipient? && SpamDetector.new(self).spam?
       self.is_deleted = true
@@ -174,7 +170,7 @@ class Dmail < ApplicationRecord
   end
 
   def update_unread_dmail_count
-    return unless saved_change_to_id? || saved_change_to_is_read? || saved_change_to_is_deleted?
+    return unless saved_change_to_id? || saved_change_to_is_read? || saved_change_to_is_deleted? || destroyed?
 
     owner.with_lock do
       unread_count = owner.dmails.active.unread.count
@@ -182,12 +178,12 @@ class Dmail < ApplicationRecord
     end
   end
 
-  def reportable_by?(user)
-    owner == user && is_recipient? && !is_automated? && !from.is_moderator?
-  end
-
   def dtext_shortlink(key: false, **options)
     key ? "dmail ##{id}/#{self.key}" : "dmail ##{id}"
+  end
+
+  def self.searchable_includes
+    [:to, :from]
   end
 
   def self.available_includes

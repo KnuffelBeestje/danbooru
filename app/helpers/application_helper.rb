@@ -5,38 +5,63 @@ module ApplicationHelper
     (fields.reduce(false) { |acc, field| acc || params.dig(:search, field).present? } && (!member_check || CurrentUser.is_member?) ? types[0] : types[1])
   end
 
-  def diff_list_html(new, old, latest, ul_class: ["diff-list"], li_class: [])
-    diff = SetDiff.new(new, old, latest)
+  def diff_list_html(this_list, other_list, ul_class: ["diff-list"], li_class: [])
+    diff = SetDiff.new(this_list, other_list)
     render "diff_list", diff: diff, ul_class: ul_class, li_class: li_class
   end
 
-  def diff_body_html(record, previous, field)
-    return h(record[field]).gsub(/\r?\n/, '<span class="paragraph-mark">¶</span><br>').html_safe if previous.blank?
-
-    pattern = Regexp.new('(?:<.+?>)|(?:\w+)|(?:[ \t]+)|(?:\r?\n)|(?:.+?)')
-    DiffBuilder.new(record[field], previous[field], pattern).build
+  def diff_name_html(this_name, other_name)
+    pattern = Regexp.new('.')
+    DiffBuilder.new(this_name, other_name, pattern).build
   end
 
-  def status_diff_html(record)
-    previous = record.previous
+  def diff_body_html(record, other, field)
+    if record.blank? || other.blank?
+      diff_record = other.presence || record
+      return h(diff_record[field]).gsub(/\r?\n/, '<span class="paragraph-mark">¶</span><br>').html_safe
+    end
 
-    return "New" if previous.blank?
+    pattern = Regexp.new('(?:<.+?>)|(?:\w+)|(?:[ \t]+)|(?:\r?\n)|(?:.+?)')
+    DiffBuilder.new(record[field], other[field], pattern).build
+  end
+
+  def status_diff_html(record, type)
+    other = record.send(type)
+
+    if other.blank?
+      return type == "previous" ? "New" : ""
+    end
 
     statuses = []
     record.class.status_fields.each do |field, status|
       if record.has_attribute?(field)
-        statuses += [status] if record[field] != previous[field]
+        statuses += [status] if record[field] != other[field]
       else
-        statuses += [status] if record.send(field)
+        statuses += [status] if record.send(field, type)
       end
     end
-    statuses.join("<br>").html_safe
+
+    altered = record.updater_id != other.updater_id
+
+    %(<div class="version-statuses" data-altered="#{altered}">#{statuses.join("<br>")}</div>).html_safe
   end
 
   def wordbreakify(string)
     lines = string.scan(/.{1,10}/)
     wordbreaked_string = lines.map {|str| h(str)}.join("<wbr>")
     raw(wordbreaked_string)
+  end
+
+  def version_type_links(params)
+    html = []
+    %w[previous subsequent current].each do |type|
+      if type == params[:type]
+        html << %(<span>#{type}</span>)
+      else
+        html << tag.li(link_to(type, params.except(:controller, :action).merge(type: type).permit!))
+      end
+    end
+    html.join(" | ").html_safe
   end
 
   def nav_link_to(text, url, **options)
@@ -96,8 +121,14 @@ module ApplicationHelper
     raw content_tag(:time, duration, datetime: datetime, title: title)
   end
 
+  def humanized_number(number)
+    number_to_human number, units: { thousand: "k", million: "m" }, format: "%n%u"
+  end
+
   def time_ago_in_words_tagged(time, compact: false)
-    if time.past?
+    if time.nil?
+      tag.em(tag.time("unknown"))
+    elsif time.past?
       if compact
         text = time_ago_in_words(time)
         text = text.gsub(/almost|about|over/, "").strip
@@ -135,8 +166,10 @@ module ApplicationHelper
     end
   end
 
-  def link_to_ip(ip)
-    link_to ip, ip_addresses_path(search: { ip_addr: ip, group_by: "user" })
+  def link_to_ip(ip, shorten: false, **options)
+    ip_addr = IPAddr.new(ip.to_s)
+    ip_addr.prefix = 64 if ip_addr.ipv6? && shorten
+    link_to ip_addr.to_s, ip_addresses_path(search: { ip_addr: ip, group_by: "user" }), **options
   end
 
   def link_to_search(search)
@@ -156,20 +189,16 @@ module ApplicationHelper
     to_sentence(links, **options)
   end
 
-  def link_to_user(user, options = {})
+  def link_to_user(user)
     return "anonymous" if user.blank?
 
-    user_class = "user-#{user.level_string.downcase}"
+    user_class = "user user-#{user.level_string.downcase}"
     user_class += " user-post-approver" if user.can_approve_posts?
     user_class += " user-post-uploader" if user.can_upload_free?
     user_class += " user-banned" if user.is_banned?
-    user_class += " with-style" if CurrentUser.user.style_usernames?
-    if options[:raw_name]
-      name = user.name
-    else
-      name = user.pretty_name
-    end
-    link_to(name, user_path(user), :class => user_class)
+
+    data = { "user-id": user.id, "user-name": user.name, "user-level": user.level }
+    link_to(user.pretty_name, user_path(user), class: user_class, data: data)
   end
 
   def mod_link_to_user(user, positive_or_negative)
@@ -195,20 +224,8 @@ module ApplicationHelper
     tag.div(text, class: "prose", **options)
   end
 
-  def dtext_field(object, name, options = {})
-    options[:name] ||= name.capitalize
-    options[:input_id] ||= "#{object}_#{name}"
-    options[:input_name] ||= "#{object}[#{name}]"
-    options[:value] ||= instance_variable_get("@#{object}").try(name)
-    options[:preview_id] ||= "dtext-preview"
-    options[:classes] ||= ""
-    options[:type] ||= "text"
-
-    render "dtext/form", options
-  end
-
-  def dtext_preview_button(object, name, input_id: "#{object}_#{name}", preview_id: "dtext-preview")
-    tag.input value: "Preview", type: "button", class: "dtext-preview-button", "data-input-id": input_id, "data-preview-id": preview_id
+  def dtext_preview_button(preview_field)
+    tag.input value: "Preview", type: "button", class: "dtext-preview-button", "data-preview-field": preview_field
   end
 
   def quick_search_form_for(attribute, url, name, autocomplete: nil, redirect: false, &block)
@@ -235,15 +252,15 @@ module ApplicationHelper
     simple_form_for(model, **options, &block)
   end
 
-  def table_for(*args, **options, &block)
-    table = TableBuilder.new(*args, **options, &block)
+  def table_for(...)
+    table = TableBuilder.new(...)
     render "table_builder/table", table: table
   end
 
   def body_attributes(user, params, current_item = nil)
     current_user_data_attributes = data_attributes_for(user, "current-user", current_user_attributes)
 
-    if current_item.present? && current_item.respond_to?(:html_data_attributes) && current_item.respond_to?(:model_name)
+    if !current_item.nil? && current_item.respond_to?(:html_data_attributes) && current_item.respond_to?(:model_name)
       model_name = current_item.model_name.singular.dasherize
       model_attributes = current_item.html_data_attributes
       current_item_data_attributes = data_attributes_for(current_item, model_name, model_attributes)
@@ -259,8 +276,9 @@ module ApplicationHelper
         controller: controller_param,
         action: action_param,
         layout: controller.class.send(:_layout),
+        "current-user-ip-addr": request.remote_ip,
         **current_user_data_attributes,
-        **current_item_data_attributes.to_h
+        **current_item_data_attributes.to_h,
       }
     }
   end
@@ -271,7 +289,7 @@ module ApplicationHelper
       can_approve_posts disable_categorized_saved_searches
       disable_mobile_gestures disable_post_tooltips enable_auto_complete
       enable_post_navigation enable_safe_mode hide_deleted_posts
-      show_deleted_children style_usernames
+      show_deleted_children style_usernames default_image_size
     ] + User::Roles.map { |role| :"is_#{role}?" }
   end
 
@@ -329,6 +347,19 @@ module ApplicationHelper
     end
   end
 
+  def canonical_url(url = nil)
+    if url.present?
+      content_for(:canonical_url) { url }
+    elsif content_for(:canonical_url).present?
+      content_for(:canonical_url)
+    else
+      request_params = request.params.sort.to_h.with_indifferent_access
+      request_params.delete(:page) if request_params[:page].to_i == 1
+      request_params.delete(:limit)
+      url_for(**request_params, host: Danbooru.config.hostname, only_path: false)
+    end
+  end
+
   def atom_feed_tag(title, url = {})
     content_for(:html_header, auto_discovery_link_tag(:atom, url, title: title))
   end
@@ -337,7 +368,7 @@ module ApplicationHelper
 
   def nav_link_match(controller, url)
     url =~ case controller
-    when "sessions", "users", "maintenance/user/password_resets", "admin/users"
+    when "sessions", "users", "admin/users"
       /^\/(session|users)/
 
     when "comments"

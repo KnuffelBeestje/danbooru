@@ -5,13 +5,14 @@ class Tag < ApplicationRecord
   has_many :consequent_aliases, -> {active}, :class_name => "TagAlias", :foreign_key => "consequent_name", :primary_key => "name"
   has_many :antecedent_implications, -> {active}, :class_name => "TagImplication", :foreign_key => "antecedent_name", :primary_key => "name"
   has_many :consequent_implications, -> {active}, :class_name => "TagImplication", :foreign_key => "consequent_name", :primary_key => "name"
+  has_many :dtext_links, foreign_key: :link_target, primary_key: :name
 
   validates :name, tag_name: true, uniqueness: true, on: :create
   validates :name, tag_name: true, on: :name
   validates_inclusion_of :category, in: TagCategory.category_ids
 
-  before_save :update_category_cache, if: :category_changed?
-  before_save :update_category_post_counts, if: :category_changed?
+  after_save :update_category_cache, if: :saved_change_to_category?
+  after_save :update_category_post_counts, if: :saved_change_to_category?
 
   scope :empty, -> { where("tags.post_count <= 0") }
   scope :nonempty, -> { where("tags.post_count > 0") }
@@ -42,7 +43,7 @@ class Tag < ApplicationRecord
 
     def value_for(string)
       norm_string = string.to_s.downcase
-      if norm_string =~ /#{TagCategory.category_ids_regex}/
+      if norm_string =~ /\A#{TagCategory.category_ids_regex}\z/
         norm_string.to_i
       elsif TagCategory.mapping[string.to_s.downcase]
         TagCategory.mapping[string.to_s.downcase]
@@ -52,10 +53,8 @@ class Tag < ApplicationRecord
     end
   end
 
-  module CountMethods
-    extend ActiveSupport::Concern
-
-    module ClassMethods
+  concerning :CountMethods do
+    class_methods do
       # Lock the tags first in alphabetical order to avoid deadlocks under concurrent updates.
       #
       # https://stackoverflow.com/questions/44660368/postgres-update-with-order-by-how-to-do-it
@@ -110,10 +109,14 @@ class Tag < ApplicationRecord
         tags
       end
     end
+
+    def empty?
+      post_count <= 0
+    end
   end
 
-  module CategoryMethods
-    module ClassMethods
+  concerning :CategoryMethods do
+    class_methods do
       def categories
         @categories ||= CategoryMapping.new
       end
@@ -148,8 +151,11 @@ class Tag < ApplicationRecord
       end
     end
 
-    def self.included(m)
-      m.extend(ClassMethods)
+    # define artist?, general?, character?, copyright?, meta?
+    TagCategory.categories.each do |category_name|
+      define_method("#{category_name}?") do
+        category == Tag.categories.send(category_name)
+      end
     end
 
     def category_name
@@ -157,12 +163,10 @@ class Tag < ApplicationRecord
     end
 
     def update_category_post_counts
-      Post.with_timeout(30_000, nil, :tags => name) do
-        Post.raw_tag_match(name).where("true /* Tag#update_category_post_counts */").find_each do |post|
-          post.reload
-          post.set_tag_counts(false)
-          args = TagCategory.categories.map {|x| ["tag_count_#{x}", post.send("tag_count_#{x}")]}.to_h.update(:tag_count => post.tag_count)
-          Post.where(:id => post.id).update_all(args)
+      Post.with_timeout(30_000) do
+        Post.raw_tag_match(name).find_each do |post|
+          post.set_tag_counts
+          post.save!
         end
       end
     end
@@ -210,7 +214,7 @@ class Tag < ApplicationRecord
             # next few lines if the category is changed.
             tag.update_category_cache
 
-            if tag.editable_by?(creator)
+            if Pundit.policy!([creator, nil], tag).can_change_category?
               tag.update(category: category_id)
             end
           end
@@ -224,40 +228,6 @@ class Tag < ApplicationRecord
           end
         end
       end
-    end
-  end
-
-  module ParseMethods
-    # true if query is a single "simple" tag (not a metatag, negated tag, or wildcard tag).
-    def is_simple_tag?(query)
-      is_single_tag?(query) && !is_metatag?(query) && !is_negated_tag?(query) && !is_optional_tag?(query) && !is_wildcard_tag?(query)
-    end
-
-    def is_single_tag?(query)
-      PostQueryBuilder.scan_query(query).size == 1
-    end
-
-    def is_metatag?(tag)
-      has_metatag?(tag, *PostQueryBuilder::METATAGS)
-    end
-
-    def is_negated_tag?(tag)
-      tag.starts_with?("-")
-    end
-
-    def is_optional_tag?(tag)
-      tag.starts_with?("~")
-    end
-
-    def is_wildcard_tag?(tag)
-      tag.include?("*")
-    end
-
-    def has_metatag?(tags, *metatags)
-      return nil if tags.blank?
-
-      tags = PostQueryBuilder.scan_query(tags.to_str) if tags.respond_to?(:to_str)
-      tags.grep(/\A(?:#{metatags.map(&:to_s).join("|")}):(.+)\z/i) { $1 }.first
     end
   end
 
@@ -315,18 +285,6 @@ class Tag < ApplicationRecord
         q = q.nonempty
       end
 
-      if params[:has_wiki].to_s.truthy?
-        q = q.joins(:wiki_page).merge(WikiPage.undeleted)
-      elsif params[:has_wiki].to_s.falsy?
-        q = q.left_outer_joins(:wiki_page).where("wiki_pages.title IS NULL OR wiki_pages.is_deleted = TRUE")
-      end
-
-      if params[:has_artist].to_s.truthy?
-        q = q.joins(:artist).merge(Artist.undeleted)
-      elsif params[:has_artist].to_s.falsy?
-        q = q.left_outer_joins(:artist).where("artists.name IS NULL OR artists.is_deleted = TRUE")
-      end
-
       case params[:order]
       when "name"
         q = q.order("name")
@@ -349,8 +307,11 @@ class Tag < ApplicationRecord
 
       query1 =
         Tag
+        .nonempty
         .select("tags.name, tags.post_count, tags.category, null AS antecedent_name")
-        .search(:name_matches => wildcard_name, :order => "count").limit(limit)
+        .name_matches(wildcard_name)
+        .order(post_count: :desc)
+        .limit(limit)
 
       query2 =
         TagAlias
@@ -379,24 +340,22 @@ class Tag < ApplicationRecord
     cosplay_tags.grep(/\A(.+)_\(cosplay\)\Z/) { "#{TagAlias.to_aliased([$1]).first}_(cosplay)" } + other_tags
   end
 
-  def editable_by?(user)
-    return true if user.is_admin?
-    return true if !is_locked? && user.is_builder? && post_count < 1_000
-    return true if !is_locked? && user.is_member? && post_count < 50
-    return false
+  def posts
+    Post.system_tag_match(name)
   end
 
-  def posts
-    Post.tag_match(name)
+  def self.model_restriction(table)
+    super.where(table[:post_count].gt(0))
+  end
+
+  def self.searchable_includes
+    [:wiki_page, :artist, :antecedent_alias, :consequent_aliases, :antecedent_implications, :consequent_implications, :dtext_links]
   end
 
   def self.available_includes
-    [:wiki_page, :artist, :antecedent_alias, :consequent_aliases, :antecedent_implications, :consequent_implications]
+    [:wiki_page, :artist, :antecedent_alias, :consequent_aliases, :antecedent_implications, :consequent_implications, :dtext_links]
   end
 
   include ApiMethods
-  include CountMethods
-  include CategoryMethods
-  extend ParseMethods
   extend SearchMethods
 end

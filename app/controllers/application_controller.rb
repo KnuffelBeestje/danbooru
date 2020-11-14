@@ -1,4 +1,7 @@
 class ApplicationController < ActionController::Base
+  include Pundit
+  helper_method :search_params
+
   class ApiLimitError < StandardError; end
 
   self.responder = ApplicationResponder
@@ -8,8 +11,9 @@ class ApplicationController < ActionController::Base
   before_action :set_current_user
   before_action :normalize_search
   before_action :api_check
+  before_action :ip_ban_check
   before_action :set_variant
-  before_action :enable_cors
+  before_action :add_headers
   before_action :cause_error
   after_action :reset_current_user
   layout "default"
@@ -39,6 +43,10 @@ class ApplicationController < ActionController::Base
     super
   end
 
+  def set_version_comparison(default_type = "previous")
+    params[:type] = %w[previous subsequent current].include?(params[:type]) ? params[:type] : default_type
+  end
+
   def model_name
     controller_name.classify
   end
@@ -57,8 +65,9 @@ class ApplicationController < ActionController::Base
 
   protected
 
-  def enable_cors
+  def add_headers
     response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["X-Git-Hash"] = Rails.application.config.x.git_hash
   end
 
   def api_check
@@ -79,6 +88,8 @@ class ApplicationController < ActionController::Base
 
   def rescue_exception(exception)
     case exception
+    when ActionView::Template::Error
+      rescue_exception(exception.cause)
     when ActiveRecord::QueryCanceled
       render_error_page(500, exception, template: "static/search_timeout", message: "The database timed out running your query.")
     when ActionController::BadRequest
@@ -87,7 +98,7 @@ class ApplicationController < ActionController::Base
       render_error_page(401, exception, template: "sessions/new")
     when ActionController::InvalidAuthenticityToken, ActionController::UnpermittedParameters, ActionController::InvalidCrossOriginRequest
       render_error_page(403, exception)
-    when User::PrivilegeError
+    when User::PrivilegeError, Pundit::NotAuthorizedError
       render_error_page(403, exception, template: "static/access_denied", message: "Access denied")
     when ActiveRecord::RecordNotFound
       render_error_page(404, exception, message: "That record was not found.")
@@ -143,9 +154,9 @@ class ApplicationController < ActionController::Base
 
   # allow api clients to force errors for testing purposes.
   def cause_error
-    return unless params[:error].present?
+    return unless params[:cause_error].present?
 
-    status = params[:error].to_i
+    status = params[:cause_error].to_i
     raise ArgumentError, "invalid status code" unless status.in?(400..599)
 
     error = StandardError.new(params[:message])
@@ -154,16 +165,16 @@ class ApplicationController < ActionController::Base
     render_error_page(status, error)
   end
 
-  def role_only!(role)
-    raise User::PrivilegeError if !CurrentUser.send("is_#{role}?")
-    raise User::PrivilegeError if !request.get? && CurrentUser.user.is_banned?
-    raise User::PrivilegeError if !request.get? && IpBan.is_banned?(CurrentUser.ip_addr)
+  def ip_ban_check
+    raise User::PrivilegeError if !request.get? && IpBan.hit!(:full, CurrentUser.ip_addr)
   end
 
-  User::Roles.each do |role|
-    define_method("#{role}_only") do
-      role_only!(role)
-    end
+  def pundit_user
+    [CurrentUser.user, request]
+  end
+
+  def pundit_params_for(record)
+    params.fetch(PolicyFinder.new(record).param_key, {})
   end
 
   # Remove blank `search` params from the url.

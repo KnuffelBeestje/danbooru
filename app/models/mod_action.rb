@@ -1,8 +1,6 @@
 class ModAction < ApplicationRecord
   belongs_to :creator, :class_name => "User"
 
-  api_attributes including: [:category_id]
-
   # ####DIVISIONS#####
   # Groups:     0-999
   # Individual: 1000-1999
@@ -48,6 +46,7 @@ class ModAction < ApplicationRecord
     tag_implication_update: 141,
     ip_ban_create: 160,
     ip_ban_delete: 162,
+    ip_ban_undelete: 163,
     mass_update: 1000,
     bulk_revert: 1001, # XXX unused
     other: 2000
@@ -64,7 +63,7 @@ class ModAction < ApplicationRecord
   def self.search(params)
     q = super
 
-    q = q.search_attributes(params, :creator, :category, :description)
+    q = q.search_attributes(params, :category, :description)
     q = q.text_attribute_matches(:description, params[:description_matches])
 
     q.apply_default_order(params)
@@ -76,6 +75,10 @@ class ModAction < ApplicationRecord
 
   def self.log(desc, cat = :other, user = CurrentUser.user)
     create(creator: user, description: desc, category: categories[cat])
+  end
+
+  def self.searchable_includes
+    [:creator]
   end
 
   def self.available_includes

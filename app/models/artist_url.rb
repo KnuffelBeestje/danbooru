@@ -20,28 +20,18 @@ class ArtistUrl < ApplicationRecord
       nil
     else
       url = url.sub(%r!^https://!, "http://")
-      url = url.sub(%r!^http://([^/]+)!i) { |domain| domain.downcase }
       url = url.sub(%r!^http://blog\d+\.fc2!, "http://blog.fc2")
       url = url.sub(%r!^http://blog-imgs-\d+\.fc2!, "http://blog.fc2")
       url = url.sub(%r!^http://blog-imgs-\d+-\w+\.fc2!, "http://blog.fc2")
-      # url = url.sub(%r!^(http://seiga.nicovideo.jp/user/illust/\d+)\?.+!, '\1/')
       url = url.sub(%r!^http://pictures.hentai-foundry.com//!, "http://pictures.hentai-foundry.com/")
-
-      # XXX should be handled by pixiv strategy.
-      url = url.sub(%r!\Ahttps?://www\.pixiv\.net/(?:en/)?users/(\d+)\z!i, 'https://www.pixiv.net/member.php?id=\1')
 
       # the strategy won't always work for twitter because it looks for a status
       url = url.downcase if url =~ %r!^https?://(?:mobile\.)?twitter\.com!
 
-      begin
-        source = Sources::Strategies.find(url)
+      url = Sources::Strategies.find(url).normalize_for_artist_finder
 
-        if !source.normalized_for_artist_finder? && source.normalizable_for_artist_finder?
-          url = source.normalize_for_artist_finder
-        end
-      rescue Net::OpenTimeout, PixivApiClient::Error
-        raise if Rails.env.test?
-      end
+      # XXX the Pixiv strategy should implement normalize_for_artist_finder and return the correct url directly.
+      url = url.sub(%r!\Ahttps?://www\.pixiv\.net/(?:en/)?users/(\d+)\z!i, 'https://www.pixiv.net/member.php?id=\1')
 
       url = url.gsub(/\/+\Z/, "")
       url = url.gsub(%r!^https://!, "http://")
@@ -52,9 +42,8 @@ class ArtistUrl < ApplicationRecord
   def self.search(params = {})
     q = super
 
-    q = q.search_attributes(params, :url, :normalized_url, :artist_id, :is_active)
+    q = q.search_attributes(params, :url, :normalized_url, :is_active)
 
-    q = q.artist_matches(params[:artist])
     q = q.url_matches(params[:url_matches])
     q = q.normalized_url_matches(params[:normalized_url_matches])
 
@@ -67,11 +56,6 @@ class ArtistUrl < ApplicationRecord
     end
 
     q
-  end
-
-  def self.artist_matches(params = {})
-    return all if params.blank?
-    where(artist_id: Artist.search(params).reorder(nil))
   end
 
   def self.url_attribute_matches(attr, url)
@@ -105,7 +89,15 @@ class ArtistUrl < ApplicationRecord
   end
 
   def normalize
+    # Perform some normalization with Addressable on the URL itself
+    # - Converts scheme and hostname to downcase
+    # - Converts unicode hostname to Punycode
+    uri = Addressable::URI.parse(url)
+    uri.site = uri.normalized_site
+    self.url = uri.to_s
     self.normalized_url = self.class.normalize(url)
+  rescue Addressable::URI::InvalidURIError
+    # Don't bother normalizing the URL if there is errors
   end
 
   def initialize_normalized_url
@@ -120,11 +112,24 @@ class ArtistUrl < ApplicationRecord
     end
   end
 
+  def validate_scheme(uri)
+    errors[:url] << "'#{uri}' must begin with http:// or https:// " unless uri.scheme.in?(%w[http https])
+  end
+
+  def validate_hostname(uri)
+    errors[:url] << "'#{uri}' has a hostname '#{uri.host}' that does not contain a dot" unless uri.host&.include?('.')
+  end
+
   def validate_url_format
     uri = Addressable::URI.parse(url)
-    errors[:url] << "'#{uri}' must begin with http:// or https:// " if !uri.scheme.in?(%w[http https])
+    validate_scheme(uri)
+    validate_hostname(uri)
   rescue Addressable::URI::InvalidURIError => error
     errors[:url] << "'#{uri}' is malformed: #{error}"
+  end
+
+  def self.searchable_includes
+    [:artist]
   end
 
   def self.available_includes

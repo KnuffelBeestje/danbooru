@@ -1,6 +1,40 @@
 module Searchable
   extend ActiveSupport::Concern
 
+  def parameter_hash?(params)
+    params.present? && params.respond_to?(:each_value)
+  end
+
+  def parameter_depth(params)
+    return 0 if params.values.empty?
+    1 + params.values.map { |v| parameter_hash?(v) ? parameter_depth(v) : 1 }.max
+  end
+
+  def negate(kind = :nand)
+    unscoped.where(all.where_clause.invert(kind).ast)
+  end
+
+  # XXX hacky method to AND two relations together.
+  def and(relation)
+    q = all
+    q = q.where(relation.where_clause.ast) if relation.where_clause.present?
+    q = q.joins(relation.joins_values + q.joins_values) if relation.joins_values.present?
+    q = q.order(relation.order_values) if relation.order_values.present?
+    q
+  end
+
+  # `operator` is an Arel::Predications method: :eq, :gt, :lt, :between, :in, etc.
+  # https://github.com/rails/rails/blob/master/activerecord/lib/arel/predications.rb
+  def where_operator(field, operator, *args)
+    if field.is_a?(Symbol)
+      attribute = arel_table[field]
+    else
+      attribute = Arel.sql(field)
+    end
+
+    where(attribute.send(operator, *args))
+  end
+
   def where_like(attr, value)
     where("#{qualified_column_for(attr)} LIKE ? ESCAPE E'\\\\'", value.to_escaped_for_sql_like)
   end
@@ -23,12 +57,12 @@ module Searchable
 
   # https://www.postgresql.org/docs/current/static/functions-matching.html#FUNCTIONS-POSIX-REGEXP
   # "(?e)" means force use of ERE syntax; see sections 9.7.3.1 and 9.7.3.4.
-  def where_regex(attr, value)
-    where("#{qualified_column_for(attr)} ~ ?", "(?e)" + value)
+  def where_regex(attr, value, flags: "e")
+    where("#{qualified_column_for(attr)} ~ ?", "(?#{flags})" + value)
   end
 
-  def where_not_regex(attr, value)
-    where.not("#{qualified_column_for(attr)} ~ ?", "(?e)" + value)
+  def where_not_regex(attr, value, flags: "e")
+    where.not("#{qualified_column_for(attr)} ~ ?", "(?#{flags})" + value)
   end
 
   def where_inet_matches(attr, value)
@@ -62,11 +96,9 @@ module Searchable
   end
 
   def where_array_count(attr, value)
-    relation = all
     qualified_column = "cardinality(#{qualified_column_for(attr)})"
-    parsed_range = PostQueryBuilder.parse_helper(value, :integer)
-
-    PostQueryBuilder.new(nil).add_range_relation(parsed_range, qualified_column, relation)
+    range = PostQueryBuilder.new(nil).parse_range(value, :integer)
+    where_operator(qualified_column, *range)
   end
 
   def search_boolean_attribute(attribute, params)
@@ -91,14 +123,13 @@ module Searchable
   end
 
   # range: "5", ">5", "<5", ">=5", "<=5", "5..10", "5,6,7"
-  def numeric_attribute_matches(attribute, range)
-    return all unless range.present?
+  def numeric_attribute_matches(attribute, value)
+    return all unless value.present?
 
     column = column_for_attribute(attribute)
     qualified_column = "#{table_name}.#{column.name}"
-    parsed_range = PostQueryBuilder.parse_helper(range, column.type)
-
-    PostQueryBuilder.new(nil).add_range_relation(parsed_range, qualified_column, self)
+    range = PostQueryBuilder.new(nil).parse_range(value, column.type)
+    where_operator(qualified_column, *range)
   end
 
   def text_attribute_matches(attribute, value, index_column: nil, ts_config: "english")
@@ -117,24 +148,35 @@ module Searchable
   end
 
   def search_attributes(params, *attributes)
+    raise ArgumentError, "max parameter depth of 10 exceeded" if parameter_depth(params) > 10
+
+    # This allows the hash keys to be either strings or symbols
+    indifferent_params = params.try(:with_indifferent_access) || params.try(:to_unsafe_h)
+    raise ArgumentError, "unable to process params" if indifferent_params.nil?
+
     attributes.reduce(all) do |relation, attribute|
-      relation.search_attribute(attribute, params)
+      relation.search_attribute(attribute, indifferent_params, CurrentUser.user)
     end
   end
 
-  def search_attribute(name, params)
+  def search_attribute(name, params, current_user)
     column = column_for_attribute(name)
     type = column.type || reflect_on_association(name)&.class_name
 
     if column.try(:array?)
-      return search_array_attribute(name, type, params)
+      subtype = type
+      type = :array
+    elsif defined_enums.has_key?(name.to_s)
+      type = :enum
     end
 
     case type
     when "User"
-      search_user_attribute(name, params)
+      search_user_attribute(name, params, current_user)
     when "Post"
-      search_post_id_attribute(params)
+      search_post_attribute(name, params, current_user)
+    when "Model"
+      search_polymorphic_attribute(name, params, current_user)
     when :string, :text
       search_text_attribute(name, params)
     when :boolean
@@ -143,12 +185,17 @@ module Searchable
       numeric_attribute_matches(name, params[name])
     when :inet
       search_inet_attribute(name, params)
+    when :enum
+      search_enum_attribute(name, params)
+    when :array
+      search_array_attribute(name, subtype, params)
     else
-      raise NotImplementedError, "unhandled attribute type"
+      raise NotImplementedError, "unhandled attribute type: #{name}" if type.blank?
+      search_includes(name, params, type, current_user)
     end
   end
 
-  def search_text_attribute(attr, params, **options)
+  def search_text_attribute(attr, params)
     if params[attr].present?
       where(attr => params[attr])
     elsif params[:"#{attr}_eq"].present?
@@ -184,27 +231,70 @@ module Searchable
     end
   end
 
-  def search_user_attribute(attr, params)
-    if params["#{attr}_id"]
-      search_attribute("#{attr}_id", params)
-    elsif params["#{attr}_name"]
+  def search_user_attribute(attr, params, current_user)
+    if params["#{attr}_name"].present?
       where(attr => User.search(name_matches: params["#{attr}_name"]).reorder(nil))
-    elsif params[attr]
-      where(attr => User.search(params[attr]).reorder(nil))
+    else
+      search_includes(attr, params, "User", current_user)
+    end
+  end
+
+  def search_post_attribute(attr, params, current_user)
+    if params["#{attr}_tags_match"]
+      where(attr => Post.user_tag_match(params["#{attr}_tags_match"], current_user).reorder(nil))
+    else
+      search_includes(attr, params, "Post", current_user)
+    end
+  end
+
+  def search_includes(attr, params, type, current_user)
+    model = Kernel.const_get(type)
+    if params["#{attr}_id"].present?
+      search_attribute("#{attr}_id", params, current_user)
+    elsif params["has_#{attr}"].to_s.truthy? || params["has_#{attr}"].to_s.falsy?
+      search_has_include(attr, params["has_#{attr}"].to_s.truthy?, model)
+    elsif parameter_hash?(params[attr])
+      where(attr => model.visible(current_user).search(params[attr]).reorder(nil))
     else
       all
     end
   end
 
-  def search_post_id_attribute(params)
-    relation = all
+  def search_polymorphic_attribute(attr, params, current_user)
+    model_keys = ((model_types || []) & params.keys)
+    # The user can only logically specify one model at a time, so more than that should return no results
+    return none if model_keys.length > 1
 
-    if params[:post_id].present?
-      relation = relation.search_attribute(:post_id, params)
+    relation = all
+    model_specified = false
+    model_key = model_keys[0]
+    if model_keys.length == 1 && parameter_hash?(params[model_key])
+      # Returning none here for the same reason specified above
+      return none if params["#{attr}_type"].present? && params["#{attr}_type"] != model_key
+      model_specified = true
+      model = Kernel.const_get(model_key)
+      relation = relation.where(attr => model.visible(current_user).search(params[model_key]))
     end
 
-    if params[:post_tags_match].present?
-      relation = relation.where(post_id: Post.tag_match(params[:post_tags_match]).reorder(nil))
+    if params["#{attr}_id"].present?
+      relation = relation.search_attribute("#{attr}_id", params, current_user)
+    end
+
+    if params["#{attr}_type"].present? && !model_specified
+      relation = relation.search_attribute("#{attr}_type", params, current_user)
+    end
+
+    relation
+  end
+
+  def search_enum_attribute(name, params)
+    relation = all
+
+    if params[name].present?
+      value = params[name].split(/[, ]+/).map(&:downcase)
+      relation = relation.where(name => value)
+    elsif params["#{name}_id"].present?
+      relation = relation.numeric_attribute_matches(name, params["#{name}_id"])
     end
 
     relation
@@ -250,14 +340,37 @@ module Searchable
     relation
   end
 
+  def search_has_include(name, exists, model)
+    if column_names.include?("#{name}_id")
+      return exists ? where.not("#{name}_id" => nil) : where("#{name}_id" => nil)
+    end
+
+    association = reflect_on_association(name)
+    primary_key = association.active_record_primary_key
+    foreign_key = association.foreign_key
+    # The belongs_to macro has its primary and foreign keys reversed
+    primary_key, foreign_key = foreign_key, primary_key if association.macro == :belongs_to
+    return all if primary_key.nil? || foreign_key.nil?
+
+    self_table = arel_table
+    model_table = model.arel_table
+    model_exists = model.model_restriction(model_table).where(model_table[foreign_key].eq(self_table[primary_key])).exists
+    if exists
+      attribute_restriction(name).where(model_exists)
+    else
+      attribute_restriction(name).where.not(model_exists)
+    end
+  end
+
   def apply_default_order(params)
     if params[:order] == "custom"
-      parse_ids = PostQueryBuilder.parse_helper(params[:id])
+      parse_ids = PostQueryBuilder.new(nil).parse_range(params[:id], :integer)
       if parse_ids[0] == :in
         return find_ordered(parse_ids[1])
       end
     end
-    return default_order
+
+    default_order
   end
 
   def default_order
@@ -276,7 +389,8 @@ module Searchable
     params ||= {}
 
     default_attributes = (attribute_names.map(&:to_sym) & %i[id created_at updated_at])
-    search_attributes(params, *default_attributes)
+    all_attributes = default_attributes + searchable_includes
+    search_attributes(params, *all_attributes)
   end
 
   private

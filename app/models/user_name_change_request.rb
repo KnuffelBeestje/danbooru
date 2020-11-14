@@ -9,13 +9,19 @@ class UserNameChangeRequest < ApplicationRecord
   after_create :update_name!
 
   def self.visible(user)
-    if user.is_admin?
+    if user.is_moderator?
       all
     elsif user.is_member?
       where(user: User.undeleted)
     else
       none
     end
+  end
+
+  def self.search(params)
+    q = super
+    q = q.search_attributes(params, :user, :original_name, :desired_name)
+    q.apply_default_order(params)
   end
 
   def update_name!

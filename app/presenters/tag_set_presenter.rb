@@ -3,7 +3,7 @@
 #   This class makes it easy to fetch the categories for all the
 #   tags in one call instead of fetching them sequentially.
 
-class TagSetPresenter < Presenter
+class TagSetPresenter
   extend Memoist
   attr_reader :tag_names
 
@@ -35,7 +35,10 @@ class TagSetPresenter < Presenter
       typetags = tags_for_category(category)
 
       if typetags.any?
-        html << TagCategory.header_mapping[category] if headers
+        if headers
+          html << %{<h3 class="#{category}-tag-list">#{category.capitalize.pluralize(typetags.size)}</h3>}
+        end
+
         html << %{<ul class="#{category}-tag-list">}
         typetags.each do |tag|
           html << build_list_item(tag, current_query: current_query, show_extra_links: show_extra_links, name_only: name_only, humanize_tags: humanize_tags)
@@ -110,7 +113,7 @@ class TagSetPresenter < Presenter
     html = %{<li class="tag-type-#{tag.category}" data-tag-name="#{h(name)}">}
 
     unless name_only
-      if category == Tag.categories.artist
+      if tag.artist?
         html << %{<a class="wiki-link" href="/artists/show_or_new?name=#{u(name)}">?</a> }
       elsif name =~ /\A\d+\z/
         html << %{<a class="wiki-link" href="/wiki_pages/~#{u(name)}">?</a> }
@@ -125,8 +128,7 @@ class TagSetPresenter < Presenter
     end
 
     humanized_tag = humanize_tags ? name.tr("_", " ") : name
-    itemprop = 'itemprop="author"' if category == Tag.categories.artist
-    html << %{<a class="search-tag" #{itemprop} href="/posts?tags=#{u(name)}">#{h(humanized_tag)}</a> }
+    html << %{<a class="search-tag" href="/posts?tags=#{u(name)}">#{h(humanized_tag)}</a> }
 
     unless name_only || tag.new_record?
       if count >= 10_000
@@ -137,7 +139,7 @@ class TagSetPresenter < Presenter
         post_count = count
       end
 
-      is_underused_tag = count <= 1 && category == Tag.categories.general
+      is_underused_tag = count <= 1 && tag.general?
       klass = "post-count#{is_underused_tag ? " low-post-count" : ""}"
 
       html << %{<span class="#{klass}" title="#{count}">#{post_count}</span>}
@@ -145,6 +147,14 @@ class TagSetPresenter < Presenter
 
     html << "</li>"
     html
+  end
+
+  def h(s)
+    CGI.escapeHTML(s)
+  end
+
+  def u(s)
+    CGI.escape(s)
   end
 
   memoize :tags, :tags_by_category, :ordered_tags, :humanized_essential_tag_string

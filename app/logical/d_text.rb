@@ -11,7 +11,7 @@ class DText
     html = DTextRagel.parse(text, **options)
     html = postprocess(html, *data)
     html
-  rescue DTextRagel::Error => e
+  rescue DTextRagel::Error
     ""
   end
 
@@ -37,7 +37,7 @@ class DText
       tag = tags.find { |tag| tag.name == name }
       artist = artists.find { |artist| artist.name == name }
 
-      if tag.present? && tag.category == Tag.categories.artist
+      if tag.present? && tag.artist?
         node["href"] = "/artists/show_or_new?name=#{CGI.escape(name)}"
 
         if artist.blank?
@@ -45,7 +45,7 @@ class DText
           node["title"] = "This artist page does not exist"
         end
 
-        node["class"] += " tag-type-#{Tag.categories.artist}"
+        node["class"] += " tag-type-#{tag.category}"
       else
         if wiki.blank?
           node["class"] += " dtext-wiki-does-not-exist"
@@ -57,7 +57,7 @@ class DText
         elsif tag.blank?
           node["class"] += " dtext-tag-does-not-exist"
           node["title"] = "This wiki page does not have a tag"
-        elsif tag.post_count <= 0
+        elsif tag.empty?
           node["class"] += " dtext-tag-empty"
           node["title"] = "This wiki page does not have a tag"
         else
@@ -105,9 +105,9 @@ class DText
       end
     elsif obj.is_a?(BulkUpdateRequest)
       if obj.script.size < 700
-        embedded_script = obj.script_with_links
+        embedded_script = obj.processor.to_dtext
       else
-        embedded_script = "[expand]#{obj.script_with_links}[/expand]"
+        embedded_script = "[expand]#{obj.processor.to_dtext}[/expand]"
       end
 
       if obj.is_approved?
@@ -135,7 +135,7 @@ class DText
     fragment = Nokogiri::HTML.fragment(html)
 
     titles = fragment.css("a.dtext-wiki-link").map do |node|
-      title = node["href"][%r!\A/wiki_pages/(.*)\z!i, 1]
+      title = node["href"][%r{\A/wiki_pages/(.*)\z}i, 1]
       title = CGI.unescape(title)
       title = WikiPage.normalize_title(title)
       title
@@ -157,13 +157,59 @@ class DText
       Set.new(parse_external_links(a)) != Set.new(parse_external_links(b))
   end
 
+  # Rewrite wiki links to [[old_name]] with [[new_name]]. We attempt to match
+  # the capitalization of the old tag when rewriting it to the new tag, but if
+  # we can't determine how the new tag should be capitalized based on some
+  # simple heuristics, then we skip rewriting the tag.
+  def self.rewrite_wiki_links(dtext, old_name, new_name)
+    old_name = old_name.downcase.squeeze("_").tr("_", " ").strip
+    new_name = new_name.downcase.squeeze("_").tr("_", " ").strip
+
+    # Match `[[name]]` or `[[name|title]]`
+    dtext.gsub(/\[\[(.*?)(?:\|(.*?))?\]\]/) do |match|
+      name = $1
+      title = $2
+
+      # Skip this link if it isn't the tag we're trying to replace.
+      normalized_name = name.downcase.tr("_", " ").squeeze(" ").strip
+      next match if normalized_name != old_name
+
+      # Strip qualifiers, e.g. `atago (midsummer march) (azur lane)` => `atago`
+      unqualified_name = name.tr("_", " ").squeeze(" ").strip.gsub(/( \(.*\))+\z/, "")
+
+      # If old tag was lowercase, e.g. [[ink tank (Splatoon)]], then keep new tag in lowercase.
+      if unqualified_name == unqualified_name.downcase
+        final_name = new_name
+      # If old tag was capitalized, e.g. [[Colored pencil (medium)]], then capitialize new tag.
+      elsif unqualified_name == unqualified_name.downcase.capitalize
+        final_name = new_name.capitalize
+      # If old tag was in titlecase, e.g. [[Hatsune Miku (cosplay)]], then titlecase new tag.
+      elsif unqualified_name == unqualified_name.split.map(&:capitalize).join(" ")
+        final_name = new_name.split.map(&:capitalize).join(" ")
+      # If we can't determine how to capitalize the new tag, then keep the old tag.
+      # e.g. [[Suzumiya Haruhi no Yuuutsu]] -> [[The Melancholy of Haruhi Suzumiya]]
+      else
+        next match
+      end
+
+      if title.present?
+        "[[#{final_name}|#{title}]]"
+      # If the new name has a qualifier, then hide the qualifier in the link.
+      elsif final_name.match?(/( \(.*\))+\z/)
+        "[[#{final_name}|]]"
+      else
+        "[[#{final_name}]]"
+      end
+    end
+  end
+
   def self.strip_blocks(string, tag)
     n = 0
     stripped = ""
     string = string.dup
 
     string.gsub!(/\s*\[#{tag}\](?!\])\s*/mi, "\n\n[#{tag}]\n\n")
-    string.gsub!(/\s*\[\/#{tag}\]\s*/mi, "\n\n[/#{tag}]\n\n")
+    string.gsub!(%r{\s*\[/#{tag}\]\s*}mi, "\n\n[/#{tag}]\n\n")
     string.gsub!(/(?:\r?\n){3,}/, "\n\n")
     string.strip!
 
@@ -203,7 +249,7 @@ class DText
       end
     end
 
-    text = text.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
+    text.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
   end
 
   def self.from_html(text, inline: false, &block)
@@ -240,7 +286,14 @@ class DText
       when "a"
         title = from_html(element.inner_html, inline: true, &block).strip
         url = element["href"]
-        %("#{title}":[#{url}]) if title.present? && url.present?
+
+        if title.blank? || url.blank?
+          ""
+        elsif title == url
+          "<#{url}>"
+        else
+          %("#{title}":[#{url}])
+        end
       when "img"
         alt_text = element.attributes["title"] || element.attributes["alt"] || ""
         src = element["src"]

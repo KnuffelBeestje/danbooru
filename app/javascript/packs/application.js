@@ -6,24 +6,20 @@ function importAll(r) {
 
 require('@rails/ujs').start();
 require('hammerjs');
-require('stupid-table-plugin');
 require('jquery-hotkeys');
 
 // should start looking for nodejs replacements
 importAll(require.context('../vendor', true, /\.js$/));
 
+require('jquery');
 require("jquery-ui/ui/effects/effect-shake");
 require("jquery-ui/ui/widgets/autocomplete");
 require("jquery-ui/ui/widgets/button");
 require("jquery-ui/ui/widgets/dialog");
-require("jquery-ui/ui/widgets/draggable");
-require("jquery-ui/ui/widgets/resizable");
 require("jquery-ui/themes/base/core.css");
 require("jquery-ui/themes/base/autocomplete.css");
 require("jquery-ui/themes/base/button.css");
 require("jquery-ui/themes/base/dialog.css");
-require("jquery-ui/themes/base/draggable.css");
-require("jquery-ui/themes/base/resizable.css");
 require("jquery-ui/themes/base/theme.css");
 
 require("@fortawesome/fontawesome-free/css/fontawesome.css");
@@ -33,6 +29,7 @@ require("@fortawesome/fontawesome-free/css/regular.css");
 importAll(require.context('../src/javascripts', true, /\.js(\.erb)?$/));
 importAll(require.context('../src/styles', true, /\.s?css(?:\.erb)?$/));
 
+export { default as jQuery } from "jquery";
 export { default as Autocomplete } from '../src/javascripts/autocomplete.js.erb';
 export { default as Blacklist } from '../src/javascripts/blacklists.js';
 export { default as Comment } from '../src/javascripts/comments.js';
@@ -46,6 +43,8 @@ export { default as PostTooltip } from '../src/javascripts/post_tooltips.js';
 export { default as PostVersion } from '../src/javascripts/post_version.js';
 export { default as RelatedTag } from '../src/javascripts/related_tag.js';
 export { default as Shortcuts } from '../src/javascripts/shortcuts.js';
+export { default as TagCounter } from '../src/javascripts/tag_counter.js';
 export { default as Upload } from '../src/javascripts/uploads.js.erb';
+export { default as UserTooltip } from '../src/javascripts/user_tooltips.js';
 export { default as Utility } from '../src/javascripts/utility.js';
 export { default as Ugoira } from '../src/javascripts/ugoira.js';

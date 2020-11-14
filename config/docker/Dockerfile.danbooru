@@ -1,0 +1,63 @@
+FROM ubuntu:20.04 AS build
+
+RUN \
+  apt-get update && \
+  DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends \
+    build-essential \
+    ruby \
+    ruby-dev \
+    ruby-bundler \
+    git \
+    nodejs \
+    yarnpkg \
+    webpack \
+    libvips-dev \
+    libxml2-dev \
+    libxslt-dev \
+    zlib1g-dev \
+    postgresql-server-dev-all && \
+    # webpacker expects the binary to be called `yarn`, but debian/ubuntu installs it as `yarnpkg`.
+    ln -sf /usr/bin/yarnpkg /usr/bin/yarn
+
+WORKDIR /build
+
+COPY .bundle .bundle
+COPY Gemfile Gemfile.lock ./
+RUN \
+  bundle config set deployment true --local && \
+  bundle config set path vendor/bundle && \
+  bundle install --jobs 4
+
+COPY package.json yarn.lock ./
+RUN yarn install
+
+COPY . .
+
+ARG DATABASE_URL=postgresql://0.0.0.0
+ARG DANBOORU_SECRET_KEY_BASE=1234
+ARG RAILS_ENV=production
+RUN bin/rails assets:precompile && ln -sf packs public/packs-test
+RUN rm -rf node_modules log tmp && mkdir log tmp
+
+FROM ubuntu:20.04
+
+RUN \
+  useradd --create-home --user-group danbooru && \
+  apt-get update && \
+  DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends \
+    ruby \
+    ffmpeg \
+    mkvtoolnix \
+    libvips \
+    libxml2 \
+    libxslt1.1 \
+    zlib1g \
+    postgresql-client
+
+USER danbooru
+WORKDIR /home/danbooru/app
+COPY --from=build --chown=danbooru /build .
+
+VOLUME ["/home/danbooru/app/public/data"]
+ENTRYPOINT ["./bin/rails"]
+CMD ["server"]

@@ -1,4 +1,5 @@
 class BulkUpdateRequest < ApplicationRecord
+  attr_accessor :title
   attr_accessor :reason
   attr_reader :skip_secondary_validations
 
@@ -7,18 +8,21 @@ class BulkUpdateRequest < ApplicationRecord
   belongs_to :forum_post, optional: true
   belongs_to :approver, optional: true, class_name: "User"
 
+  validates_presence_of :reason, on: :create
   validates_presence_of :script
   validates_presence_of :title, if: ->(rec) {rec.forum_topic_id.blank?}
+  validates_presence_of :forum_topic, if: ->(rec) {rec.forum_topic_id.present?}
   validates_inclusion_of :status, :in => %w(pending approved rejected)
-  validate :script_formatted_correctly
-  validate :forum_topic_id_not_invalid
-  validate :validate_script, :on => :create
-  before_validation :normalize_text
+  validate :validate_script, if: :script_changed?
+
+  before_save :update_tags, if: :script_changed?
   after_create :create_forum_topic
-  after_save :update_notice
 
   scope :pending_first, -> { order(Arel.sql("(case status when 'pending' then 0 when 'approved' then 1 else 2 end)")) }
   scope :pending, -> {where(status: "pending")}
+  scope :approved, -> { where(status: "approved") }
+  scope :rejected, -> { where(status: "rejected") }
+  scope :has_topic, -> { where.not(forum_topic: nil) }
   scope :expired, -> {where("created_at < ?", TagRelationship::EXPIRY.days.ago)}
   scope :old, -> {where("created_at between ? and ?", TagRelationship::EXPIRY.days.ago, TagRelationship::EXPIRY_WARNING.days.ago)}
 
@@ -30,8 +34,7 @@ class BulkUpdateRequest < ApplicationRecord
     def search(params = {})
       q = super
 
-      q = q.search_attributes(params, :user, :approver, :forum_topic_id, :forum_post_id, :title, :script)
-      q = q.text_attribute_matches(:title, params[:title_matches])
+      q = q.search_attributes(params, :script, :tags)
       q = q.text_attribute_matches(:script, params[:script_matches])
 
       if params[:status].present?
@@ -60,50 +63,42 @@ class BulkUpdateRequest < ApplicationRecord
     def forum_updater
       @forum_updater ||= begin
         post = if forum_topic
-          forum_post || forum_topic.posts.first
+          forum_post || forum_topic.forum_posts.first
         else
           nil
         end
-        ForumUpdater.new(
-          forum_topic,
-          forum_post: post,
-          expected_title: title,
-          skip_update: !TagRelationship::SUPPORT_HARD_CODED
-        )
+        ForumUpdater.new(forum_topic, forum_post: post)
       end
     end
 
     def approve!(approver)
       transaction do
         CurrentUser.scoped(approver) do
-          AliasAndImplicationImporter.new(script, forum_topic_id, "1", true).process!
+          processor.process!(approver)
           update!(status: "approved", approver: approver, skip_secondary_validations: true)
-          forum_updater.update("The #{bulk_update_request_link} (forum ##{forum_post.id}) has been approved by @#{approver.name}.", "APPROVED")
+          forum_updater.update("The #{bulk_update_request_link} (forum ##{forum_post.id}) has been approved by @#{approver.name}.")
         end
       end
-    rescue AliasAndImplicationImporter::Error => x
+    rescue BulkUpdateRequestProcessor::Error => x
       self.approver = approver
       CurrentUser.scoped(approver) do
-        forum_updater.update("The #{bulk_update_request_link} (forum ##{forum_post.id}) has failed: #{x}", "FAILED")
+        forum_updater.update("The #{bulk_update_request_link} (forum ##{forum_post.id}) has failed: #{x}")
       end
-    end
-
-    def date_timestamp
-      Time.now.strftime("%Y-%m-%d")
     end
 
     def create_forum_topic
       CurrentUser.as(user) do
+        body = "[bur:#{id}]\n\n#{reason}"
         self.forum_topic = ForumTopic.create(title: title, category_id: 1, creator: user) unless forum_topic.present?
-        self.forum_post = forum_topic.posts.create(body: reason_with_link, creator: user) unless forum_post.present?
+        self.forum_post = forum_topic.forum_posts.create(body: body, creator: user) unless forum_post.present?
         save
       end
     end
 
     def reject!(rejector = User.system)
       transaction do
-        update(status: "rejected")
-        forum_updater.update("The #{bulk_update_request_link} (forum ##{forum_post.id}) has been rejected by @#{rejector.name}.", "REJECTED")
+        update!(status: "rejected")
+        forum_updater.update("The #{bulk_update_request_link} (forum ##{forum_post.id}) has been rejected by @#{rejector.name}.")
       end
     end
 
@@ -112,72 +107,29 @@ class BulkUpdateRequest < ApplicationRecord
     end
   end
 
-  module ValidationMethods
-    def script_formatted_correctly
-      AliasAndImplicationImporter.tokenize(script)
-    rescue StandardError => e
-      errors[:base] << e.message
-    end
-
-    def forum_topic_id_not_invalid
-      if forum_topic_id && !forum_topic
-        errors[:base] << "Forum topic ID is invalid"
-      end
-    end
-
-    def validate_script
-      AliasAndImplicationImporter.new(script, forum_topic_id, "1", skip_secondary_validations).validate!
-    rescue RuntimeError => e
-      errors[:base] << e.message
+  def validate_script
+    if processor.invalid?
+      errors[:base] << processor.errors.full_messages.join("; ")
     end
   end
 
   extend SearchMethods
   include ApprovalMethods
-  include ValidationMethods
 
-  def editable?(user)
-    user_id == user.id || user.is_builder?
-  end
-
-  def approvable?(user)
-    !is_approved? && user.is_admin?
-  end
-
-  def rejectable?(user)
-    is_pending? && editable?(user)
-  end
-
-  def reason_with_link
-    "[bur:#{id}]\n\nReason: #{reason}"
-  end
-
-  def script_with_links
-    tokens = AliasAndImplicationImporter.tokenize(script)
-    lines = tokens.map do |token|
-      case token[0]
-      when :create_alias, :create_implication, :remove_alias, :remove_implication
-        "#{token[0].to_s.tr("_", " ")} [[#{token[1]}]] -> [[#{token[2]}]]"
-
-      when :mass_update
-        "mass update {{#{token[1]}}} -> #{token[2]}"
-
-      when :change_category
-        "category [[#{token[1]}]] -> #{token[2]}"
-
-      else
-        raise "Unknown token: #{token[0]}"
-      end
-    end
-    lines.join("\n")
-  end
-
-  def normalize_text
-    self.script = script.downcase
+  def update_tags
+    self.tags = processor.affected_tags
   end
 
   def skip_secondary_validations=(v)
     @skip_secondary_validations = v.to_s.truthy?
+  end
+
+  def processor
+    @processor ||= BulkUpdateRequestProcessor.new(self)
+  end
+
+  def is_tag_move_allowed?
+    processor.is_tag_move_allowed?
   end
 
   def is_pending?
@@ -192,11 +144,8 @@ class BulkUpdateRequest < ApplicationRecord
     status == "rejected"
   end
 
-  def update_notice
-    TagChangeNoticeService.update_cache(
-      AliasAndImplicationImporter.new(script, nil).affected_tags,
-      forum_topic_id
-    )
+  def self.searchable_includes
+    [:user, :forum_topic, :forum_post, :approver]
   end
 
   def self.available_includes

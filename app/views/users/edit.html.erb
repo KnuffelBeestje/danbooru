@@ -25,16 +25,23 @@
         <div class="input">
           <label>Email</label>
           <p>
-            <%= CurrentUser.user.email.presence || "<em>blank</em>".html_safe %> – <%= link_to "Change your email", new_maintenance_user_email_change_path %>
+            <% if @user.email_address.present? %>
+              <%= @user.email_address.address %>
+
+              (<%= link_to "Change email", edit_user_email_path(@user) %>
+              <% if !@user.email_address.is_verified %>
+                | <%= link_to "Verify email", verify_user_email_path(@user) %>
+              <% end %>)
+            <% else %>
+              <%= link_to "Add email", edit_user_email_path(@user) %>
+            <% end %>
           </p>
         </div>
 
         <%= f.input :theme, collection: User.themes.keys, include_blank: false, hint: "The site's colorscheme (light mode or dark mode)." %>
         <%= f.input :enable_safe_mode, label: "Safe mode", hint: "Show only safe images. Hide questionable and explicit images.", as: :select, include_blank: false, collection: [["Yes", "true"], ["No", "false"]] %>
         
-        <% if CurrentUser.user.is_gold? %>
-          <%= f.input :per_page, :label => "Posts per page", :as => :select, :hint => "Number of thumbnails per page", :collection => (1..PostSets::Post::MAX_PER_PAGE), :include_blank => false %>
-        <% end %>
+        <%= f.input :per_page, label: "Posts per page", as: :select, hint: "Number of thumbnails per page", collection: (1..PostSets::Post::MAX_PER_PAGE), include_blank: false %>
         <%= f.input :default_image_size, hint: "Show full original images or resized #{Danbooru.config.large_image_width}px width samples.", label: "Default image width", collection: [["850px", "large"], ["original", "original"]], include_blank: false %>
         <%= f.input :receive_email_notifications, as: :select, include_blank: false, collection: [["Yes", "true"], ["No", "false"]], hint: "Receive an email when you receive a new dmail." %>
         <%= f.input :time_zone, include_blank: false, hint: "The timezone to use for timestamps." %>
@@ -52,7 +59,6 @@
         </div>
 
         <%= f.input :style_usernames, :as => :select, :label => "Colored usernames", :hint => "Color users according to their user level", :include_blank => false, :collection => [["Yes", "true"], ["No", "false"]] %>
-        <%= f.input :always_resize_images, :as => :select, :include_blank => false, :label => "Fit images to window", :hint => "Make images fit screen width by default", :collection => [["Yes", "true"], ["No", "false"]] %>
         <%= f.input :enable_post_navigation, :as => :select, :include_blank => false, :label => "Enable keyboard shortcuts", :hint => "Enable keyboard shortcuts", :collection => [["Yes", "true"], ["No", "false"]] %>
         <%= f.input :enable_sequential_post_navigation, :as => :select, :label => "Enable post navigation", :hint => "Show prev/next links when viewing a post", :include_blank => false, :collection => [["Yes", "true"], ["No", "false"]] %>
         <%= f.input :new_post_navigation_layout, :as => :select, :label => "Navigation bar position", :include_blank => false, :collection => [["Below", "true"], ["Above", "false"]], :hint => "When browsing pools or posts, place navigation links above or below the image" %>

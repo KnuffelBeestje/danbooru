@@ -16,7 +16,8 @@ class ApplicationRecord < ActiveRecord::Base
         search_params = params.fetch(:search, {}).permit!
         search_params = defaults.merge(search_params).with_indifferent_access
 
-        search(search_params).paginate(params[:page], limit: params[:limit], search_count: count_pages)
+        max_limit = (params[:format] == "sitemap") ? 10_000 : 1_000
+        search(search_params).paginate(params[:page], limit: params[:limit], max_limit: max_limit, search_count: count_pages)
       end
     end
   end
@@ -31,19 +32,6 @@ class ApplicationRecord < ActiveRecord::Base
 
   concerning :ApiMethods do
     class_methods do
-      def api_attributes(*attributes, including: [])
-        return @api_attributes if @api_attributes
-
-        if attributes.present?
-          @api_attributes = attributes
-        else
-          @api_attributes = attribute_types.reject { |name, attr| attr.type.in?([:inet, :tsvector]) }.keys.map(&:to_sym)
-        end
-
-        @api_attributes += including
-        @api_attributes
-      end
-
       def available_includes
         []
       end
@@ -65,16 +53,16 @@ class ApplicationRecord < ActiveRecord::Base
       self.class.available_includes
     end
 
-    def api_attributes
-      self.class.api_attributes
+    # XXX deprecated, shouldn't expose this as an instance method.
+    def api_attributes(user: CurrentUser.user)
+      policy = Pundit.policy([user, nil], self) || ApplicationPolicy.new([user, nil], self)
+      policy.api_attributes
     end
 
-    def html_data_attributes
-      data_attributes = self.class.columns.select do |column|
-        column.type.in?([:integer, :boolean]) && !column.array?
-      end.map(&:name).map(&:to_sym)
-
-      api_attributes & data_attributes
+    # XXX deprecated, shouldn't expose this as an instance method.
+    def html_data_attributes(user: CurrentUser.user)
+      policy = Pundit.policy([user, nil], self) || ApplicationPolicy.new([user, nil], self)
+      policy.html_data_attributes
     end
 
     def serializable_hash(options = {})
@@ -103,6 +91,22 @@ class ApplicationRecord < ActiveRecord::Base
     end
   end
 
+  concerning :SearchMethods do
+    class_methods do
+      def searchable_includes
+        []
+      end
+
+      def model_restriction(table)
+        table.project(1)
+      end
+
+      def attribute_restriction(*)
+        all
+      end
+    end
+  end
+
   concerning :ActiveRecordExtensions do
     class_methods do
       def without_timeout
@@ -120,6 +124,10 @@ class ApplicationRecord < ActiveRecord::Base
         return default_value
       ensure
         connection.execute("SET STATEMENT_TIMEOUT = #{CurrentUser.user.try(:statement_timeout) || 3_000}") unless Rails.env == "test"
+      end
+
+      def update!(*args)
+        all.each { |record| record.update!(*args) }
       end
     end
   end

@@ -7,7 +7,6 @@ gem "pg"
 gem "delayed_job"
 gem "delayed_job_active_record"
 gem "simple_form"
-gem "mechanize"
 gem "whenever", :require => false
 gem "sanitize"
 gem 'ruby-vips'
@@ -28,26 +27,23 @@ gem 'daemons'
 gem 'oauth2'
 gem 'bootsnap'
 gem 'addressable'
-gem 'httparty'
 gem 'rakismet'
 gem 'recaptcha', require: "recaptcha/rails"
 gem 'activemodel-serializers-xml'
-gem 'jquery-rails'
 gem 'webpacker', '>= 4.0.x'
 gem 'rake'
-gem 'retriable'
 gem 'redis'
 gem 'request_store'
 gem 'builder'
 # gem 'did_you_mean' # github.com/yuki24/did_you_mean/issues/117
 gem 'puma'
 gem 'scenic'
-gem 'ipaddress'
+gem 'ipaddress_2'
 gem 'http'
 gem 'activerecord-hierarchical_query'
-
-# needed for looser jpeg header compat
-gem 'ruby-imagespec', :require => "image_spec", :git => "https://github.com/r888888888/ruby-imagespec.git", :branch => "exif-fixes"
+gem 'pundit'
+gem 'mail'
+gem 'nokogiri'
 
 group :production, :staging do
   gem 'unicorn', :platforms => :ruby
@@ -61,7 +57,8 @@ group :production do
 end
 
 group :development do
-  gem 'sinatra'
+  gem 'rubocop'
+  gem 'rubocop-rails'
   gem 'meta_request'
   gem 'rack-mini-profiler'
   gem 'stackprof'
@@ -70,10 +67,8 @@ group :development do
 end
 
 group :development, :test do
-  gem 'awesome_print'
   gem 'pry-byebug'
   gem 'pry-rails'
-  gem 'pry-inline'
   gem 'listen'
 end
 
@@ -81,12 +76,13 @@ group :test do
   gem "shoulda-context"
   gem "shoulda-matchers"
   gem "factory_bot"
-  gem "mocha"
+  gem "mocha", require: "mocha/minitest"
   gem "ffaker"
-  gem "simplecov", :require => false
-  gem "webmock"
+  gem "simplecov", require: false
   gem "minitest-ci"
+  gem "minitest-reporters", require: "minitest/reporters"
   gem "mock_redis"
   gem "capybara"
   gem "selenium-webdriver"
+  gem "codecov", require: false
 end

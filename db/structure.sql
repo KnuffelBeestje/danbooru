@@ -486,10 +486,10 @@ CREATE TABLE public.artist_commentary_versions (
     post_id integer NOT NULL,
     updater_id integer NOT NULL,
     updater_ip_addr inet NOT NULL,
-    original_title text,
-    original_description text,
-    translated_title text,
-    translated_description text,
+    original_title text DEFAULT ''::text NOT NULL,
+    original_description text DEFAULT ''::text NOT NULL,
+    translated_title text DEFAULT ''::text NOT NULL,
+    translated_description text DEFAULT ''::text NOT NULL,
     created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
@@ -558,7 +558,7 @@ CREATE TABLE public.artist_versions (
     name character varying NOT NULL,
     updater_id integer NOT NULL,
     updater_ip_addr inet NOT NULL,
-    is_active boolean DEFAULT true NOT NULL,
+    is_deleted boolean DEFAULT false NOT NULL,
     other_names text[] DEFAULT '{}'::text[] NOT NULL,
     group_name character varying DEFAULT ''::character varying NOT NULL,
     urls text[] DEFAULT '{}'::text[] NOT NULL,
@@ -670,7 +670,7 @@ CREATE TABLE public.bulk_update_requests (
     updated_at timestamp without time zone NOT NULL,
     approver_id integer,
     forum_post_id integer,
-    title text
+    tags text[] DEFAULT '{}'::text[] NOT NULL
 );
 
 
@@ -878,6 +878,41 @@ CREATE SEQUENCE public.dtext_links_id_seq
 --
 
 ALTER SEQUENCE public.dtext_links_id_seq OWNED BY public.dtext_links.id;
+
+
+--
+-- Name: email_addresses; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_addresses (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    user_id bigint NOT NULL,
+    address character varying NOT NULL,
+    normalized_address character varying NOT NULL,
+    is_verified boolean DEFAULT false NOT NULL,
+    is_deliverable boolean DEFAULT true NOT NULL
+);
+
+
+--
+-- Name: email_addresses_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.email_addresses_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: email_addresses_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.email_addresses_id_seq OWNED BY public.email_addresses.id;
 
 
 --
@@ -2167,7 +2202,6 @@ CREATE TABLE public.users (
     id integer NOT NULL,
     name character varying NOT NULL,
     level integer DEFAULT 20 NOT NULL,
-    email character varying,
     inviter_id integer,
     created_at timestamp without time zone NOT NULL,
     last_logged_in_at timestamp without time zone DEFAULT now(),
@@ -2283,12 +2317,16 @@ UNION ALL
 --
 
 CREATE TABLE public.ip_bans (
-    id integer NOT NULL,
     creator_id integer NOT NULL,
     ip_addr inet NOT NULL,
     reason text NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    updated_at timestamp without time zone NOT NULL,
+    id integer NOT NULL,
+    is_deleted boolean DEFAULT false NOT NULL,
+    category integer DEFAULT 0 NOT NULL,
+    hit_count integer DEFAULT 0 NOT NULL,
+    last_hit_at timestamp without time zone
 );
 
 
@@ -2546,7 +2584,8 @@ CREATE TABLE public.post_appeals (
     creator_id integer NOT NULL,
     reason text,
     created_at timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    updated_at timestamp without time zone NOT NULL,
+    status integer DEFAULT 0 NOT NULL
 );
 
 
@@ -2611,7 +2650,7 @@ CREATE TABLE public.post_disapprovals (
     post_id integer NOT NULL,
     created_at timestamp without time zone,
     updated_at timestamp without time zone,
-    reason character varying DEFAULT 'legacy'::character varying,
+    reason character varying NOT NULL,
     message text
 );
 
@@ -2646,7 +2685,8 @@ CREATE TABLE public.post_flags (
     reason text,
     is_resolved boolean DEFAULT false NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    updated_at timestamp without time zone NOT NULL,
+    status integer DEFAULT 0 NOT NULL
 );
 
 
@@ -3050,38 +3090,6 @@ ALTER SEQUENCE public.user_name_change_requests_id_seq OWNED BY public.user_name
 
 
 --
--- Name: user_password_reset_nonces; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.user_password_reset_nonces (
-    id integer NOT NULL,
-    key character varying NOT NULL,
-    email character varying NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone NOT NULL
-);
-
-
---
--- Name: user_password_reset_nonces_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.user_password_reset_nonces_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: user_password_reset_nonces_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.user_password_reset_nonces_id_seq OWNED BY public.user_password_reset_nonces.id;
-
-
---
 -- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -3244,6 +3252,13 @@ ALTER TABLE ONLY public.dmails ALTER COLUMN id SET DEFAULT nextval('public.dmail
 --
 
 ALTER TABLE ONLY public.dtext_links ALTER COLUMN id SET DEFAULT nextval('public.dtext_links_id_seq'::regclass);
+
+
+--
+-- Name: email_addresses id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_addresses ALTER COLUMN id SET DEFAULT nextval('public.email_addresses_id_seq'::regclass);
 
 
 --
@@ -4143,13 +4158,6 @@ ALTER TABLE ONLY public.user_name_change_requests ALTER COLUMN id SET DEFAULT ne
 
 
 --
--- Name: user_password_reset_nonces id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.user_password_reset_nonces ALTER COLUMN id SET DEFAULT nextval('public.user_password_reset_nonces_id_seq'::regclass);
-
-
---
 -- Name: users id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -4280,6 +4288,14 @@ ALTER TABLE ONLY public.dmails
 
 ALTER TABLE ONLY public.dtext_links
     ADD CONSTRAINT dtext_links_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_addresses email_addresses_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_addresses
+    ADD CONSTRAINT email_addresses_pkey PRIMARY KEY (id);
 
 
 --
@@ -4507,14 +4523,6 @@ ALTER TABLE ONLY public.user_name_change_requests
 
 
 --
--- Name: user_password_reset_nonces user_password_reset_nonces_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.user_password_reset_nonces
-    ADD CONSTRAINT user_password_reset_nonces_pkey PRIMARY KEY (id);
-
-
---
 -- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4728,6 +4736,13 @@ CREATE INDEX index_bulk_update_requests_on_forum_post_id ON public.bulk_update_r
 
 
 --
+-- Name: index_bulk_update_requests_on_tags; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_bulk_update_requests_on_tags ON public.bulk_update_requests USING gin (tags);
+
+
+--
 -- Name: index_comment_votes_on_comment_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4871,6 +4886,41 @@ CREATE INDEX index_dtext_links_on_link_type ON public.dtext_links USING btree (l
 --
 
 CREATE INDEX index_dtext_links_on_model_type_and_model_id ON public.dtext_links USING btree (model_type, model_id);
+
+
+--
+-- Name: index_email_addresses_on_address; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_email_addresses_on_address ON public.email_addresses USING btree (address);
+
+
+--
+-- Name: index_email_addresses_on_address_trgm; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_email_addresses_on_address_trgm ON public.email_addresses USING gin (address public.gin_trgm_ops);
+
+
+--
+-- Name: index_email_addresses_on_normalized_address; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_email_addresses_on_normalized_address ON public.email_addresses USING btree (normalized_address);
+
+
+--
+-- Name: index_email_addresses_on_normalized_address_trgm; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_email_addresses_on_normalized_address_trgm ON public.email_addresses USING gin (normalized_address public.gin_trgm_ops);
+
+
+--
+-- Name: index_email_addresses_on_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX index_email_addresses_on_user_id ON public.email_addresses USING btree (user_id);
 
 
 --
@@ -6393,10 +6443,24 @@ CREATE INDEX index_forum_topics_on_updated_at ON public.forum_topics USING btree
 
 
 --
+-- Name: index_ip_bans_on_category; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_ip_bans_on_category ON public.ip_bans USING btree (category);
+
+
+--
 -- Name: index_ip_bans_on_ip_addr; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX index_ip_bans_on_ip_addr ON public.ip_bans USING btree (ip_addr);
+
+
+--
+-- Name: index_ip_bans_on_is_deleted; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_ip_bans_on_is_deleted ON public.ip_bans USING btree (is_deleted);
 
 
 --
@@ -6561,6 +6625,13 @@ CREATE INDEX index_post_appeals_on_reason_tsvector ON public.post_appeals USING 
 
 
 --
+-- Name: index_post_appeals_on_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_post_appeals_on_status ON public.post_appeals USING btree (status);
+
+
+--
 -- Name: index_post_approvals_on_post_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -6607,6 +6678,13 @@ CREATE INDEX index_post_flags_on_post_id ON public.post_flags USING btree (post_
 --
 
 CREATE INDEX index_post_flags_on_reason_tsvector ON public.post_flags USING gin (to_tsvector('english'::regconfig, reason));
+
+
+--
+-- Name: index_post_flags_on_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_post_flags_on_status ON public.post_flags USING btree (status);
 
 
 --
@@ -6680,6 +6758,13 @@ CREATE INDEX index_posts_on_image_width ON public.posts USING btree (image_width
 
 
 --
+-- Name: index_posts_on_is_deleted; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_posts_on_is_deleted ON public.posts USING btree (is_deleted) WHERE (is_deleted = true);
+
+
+--
 -- Name: index_posts_on_is_flagged; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -6733,6 +6818,13 @@ CREATE INDEX index_posts_on_parent_id ON public.posts USING btree (parent_id) WH
 --
 
 CREATE INDEX index_posts_on_pixiv_id ON public.posts USING btree (pixiv_id) WHERE (pixiv_id IS NOT NULL);
+
+
+--
+-- Name: index_posts_on_source; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX index_posts_on_source ON public.posts USING btree (lower((source)::text));
 
 
 --
@@ -6943,13 +7035,6 @@ CREATE INDEX index_user_name_change_requests_on_user_id ON public.user_name_chan
 --
 
 CREATE INDEX index_users_on_created_at ON public.users USING btree (created_at);
-
-
---
--- Name: index_users_on_email; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_users_on_email ON public.users USING btree (email) WHERE (email IS NOT NULL);
 
 
 --
@@ -7323,6 +7408,17 @@ INSERT INTO "schema_migrations" (version) VALUES
 ('20200223042415'),
 ('20200223234015'),
 ('20200306202253'),
-('20200307021204');
+('20200307021204'),
+('20200309035334'),
+('20200309043653'),
+('20200318224633'),
+('20200325073456'),
+('20200325074859'),
+('20200403210353'),
+('20200406054838'),
+('20200427190519'),
+('20200520060951'),
+('20200803022359'),
+('20200816175151');
 
 

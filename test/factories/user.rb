@@ -1,10 +1,7 @@
 FactoryBot.define do
   factory(:user, aliases: [:creator, :updater]) do
-    sequence :name do |n|
-      "user#{n}"
-    end
+    name { SecureRandom.uuid }
     password {"password"}
-    email {FFaker::Internet.email}
     default_image_size {"large"}
     level {20}
     created_at {Time.now}

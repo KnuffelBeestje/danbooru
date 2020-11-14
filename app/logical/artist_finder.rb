@@ -6,7 +6,7 @@ module ArtistFinder
   SITE_BLACKLIST = [
     "artstation.com/artist", # http://www.artstation.com/artist/serafleur/
     "www.artstation.com", # http://www.artstation.com/serafleur/
-    %r!cdn[ab]?\.artstation\.com/p/assets/images/images!i, # https://cdna.artstation.com/p/assets/images/images/001/658/068/large/yang-waterkuma-b402.jpg?1450269769
+    %r{cdn[ab]?\.artstation\.com/p/assets/images/images}i, # https://cdna.artstation.com/p/assets/images/images/001/658/068/large/yang-waterkuma-b402.jpg?1450269769
     "ask.fm", # http://ask.fm/mikuroko_396
     "bcyimg.com",
     "bcyimg.com/drawer", # https://img9.bcyimg.com/drawer/32360/post/178vu/46229ec06e8111e79558c1b725ebc9e6.jpg
@@ -52,7 +52,7 @@ module ArtistFinder
     "hentai-foundry.com",
     "hentai-foundry.com/pictures/user", # http://www.hentai-foundry.com/pictures/user/aaaninja/
     "hentai-foundry.com/user", # http://www.hentai-foundry.com/user/aaaninja/profile
-    %r!pictures\.hentai-foundry\.com(?:/\w)?!i, # http://pictures.hentai-foundry.com/a/aaaninja/
+    %r{pictures\.hentai-foundry\.com(?:/\w)?}i, # http://pictures.hentai-foundry.com/a/aaaninja/
     "i.imgur.com", # http://i.imgur.com/Ic9q3.jpg
     "instagram.com", # http://www.instagram.com/serafleur.art/
     "iwara.tv",
@@ -62,13 +62,15 @@ module ArtistFinder
     "monappy.jp",
     "monappy.jp/u", # https://monappy.jp/u/abara_bone
     "mstdn.jp", # https://mstdn.jp/@oneb
+    "www.newgrounds.com", # https://jessxjess.newgrounds.com/
+    "newgrounds.com/art/view/", # https://www.newgrounds.com/art/view/jessxjess/avatar-korra
     "nicoseiga.jp",
     "nicoseiga.jp/priv", # http://lohas.nicoseiga.jp/priv/2017365fb6cfbdf47ad26c7b6039feb218c5e2d4/1498430264/6820259
     "nicovideo.jp",
     "nicovideo.jp/user", # http://www.nicovideo.jp/user/317609
     "nicovideo.jp/user/illust", # http://seiga.nicovideo.jp/user/illust/29075429
     "nijie.info", # http://nijie.info/members.php?id=15235
-    %r!nijie\.info/nijie_picture!i, # http://pic03.nijie.info/nijie_picture/32243_20150609224803_0.png
+    %r{nijie\.info/nijie_picture}i, # http://pic03.nijie.info/nijie_picture/32243_20150609224803_0.png
     "patreon.com", # http://patreon.com/serafleur
     "pawoo.net", # https://pawoo.net/@148nasuka
     "pawoo.net/web/accounts", # https://pawoo.net/web/accounts/228341
@@ -86,6 +88,8 @@ module ArtistFinder
     "plurk.com", # http://www.plurk.com/a1amorea1a1
     "privatter.net",
     "privatter.net/u", # http://privatter.net/u/saaaatonaaaa
+    "reddit.com/r", # https://www.reddit.com/r/pixiepowderpuff/
+    "reddit.com/user", # https://www.reddit.com/user/dishwasher1910
     "rule34.paheal.net",
     "rule34.paheal.net/post/list", # http://rule34.paheal.net/post/list/Reach025/
     "sankakucomplex.com", # https://chan.sankakucomplex.com/?tags=user%3ASubridet
@@ -107,6 +111,8 @@ module ArtistFinder
     "ustream.tv/user", # http://www.ustream.tv/user/kazaputi
     "vk.com", # https://vk.com/id425850679
     "weibo.com", # http://www.weibo.com/5536681649
+    "weibo.com/u",
+    "weibo.com/p",
     "wp.com",
     "yande.re",
     "youtube.com",
@@ -118,17 +124,15 @@ module ArtistFinder
 
   SITE_BLACKLIST_REGEXP = Regexp.union(SITE_BLACKLIST.map do |domain|
     domain = Regexp.escape(domain) if domain.is_a?(String)
-    %r!\Ahttps?://(?:[a-zA-Z0-9_-]+\.)*#{domain}/\z!i
+    %r{\Ahttps?://(?:[a-zA-Z0-9_-]+\.)*#{domain}/\z}i
   end)
 
   def find_artists(url)
     url = ArtistUrl.normalize(url)
     artists = []
 
-    # return [] unless Sources::Strategies.find(url).normalized_for_artist_finder?
-
     while artists.empty? && url.size > 10
-      u = url.sub(/\/+$/, "") + "/"
+      u = url.sub(%r{/+$}, "") + "/"
       u = u.to_escaped_for_sql_like.gsub(/\*/, '%') + '%'
       artists += Artist.joins(:urls).where(["artists.is_deleted = FALSE AND artist_urls.normalized_url LIKE ? ESCAPE E'\\\\'", u]).limit(10).order("artists.name").all
       url = File.dirname(url) + "/"

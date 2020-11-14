@@ -8,18 +8,18 @@ class Artist < ApplicationRecord
 
   before_validation :normalize_name
   before_validation :normalize_other_names
-  after_save :create_version
-  after_save :clear_url_string_changed
   validate :validate_tag_category
   validates :name, tag_name: true, uniqueness: true
+  before_save :update_tag_category
+  after_save :create_version
+  after_save :clear_url_string_changed
+
   has_many :members, :class_name => "Artist", :foreign_key => "group_name", :primary_key => "name"
   has_many :urls, :dependent => :destroy, :class_name => "ArtistUrl", :autosave => true
   has_many :versions, -> {order("artist_versions.id ASC")}, :class_name => "ArtistVersion"
   has_one :wiki_page, :foreign_key => "title", :primary_key => "name"
   has_one :tag_alias, :foreign_key => "antecedent_name", :primary_key => "name"
   belongs_to :tag, foreign_key: "name", primary_key: "name", default: -> { Tag.new(name: name, category: Tag.categories.artist) }
-
-  accepts_nested_attributes_for :wiki_page, update_only: true, reject_if: :all_blank
 
   scope :banned, -> { where(is_banned: true) }
   scope :unbanned, -> { where(is_banned: false) }
@@ -134,10 +134,8 @@ class Artist < ApplicationRecord
       source = params.delete(:source)
 
       if source.blank? && params[:name].present?
-        CurrentUser.without_safe_mode do
-          post = Post.tag_match("source:http* #{params[:name]}").first
-          source = post.try(:source)
-        end
+        post = Post.system_tag_match("source:http* #{params[:name]}").first
+        source = post.try(:source)
       end
 
       if source.present?
@@ -155,12 +153,18 @@ class Artist < ApplicationRecord
 
   module TagMethods
     def validate_tag_category
-      return unless !is_deleted? && name_changed?
+      return unless !is_deleted? && name_changed? && tag.present?
 
-      if tag.category_name == "General"
-        tag.update(category: Tag.categories.artist)
-      elsif tag.category_name != "Artist"
+      if tag.category_name != "Artist" && !tag.empty?
         errors[:base] << "'#{name}' is a #{tag.category_name.downcase} tag; artist entries can only be created for artist tags"
+      end
+    end
+
+    def update_tag_category
+      return unless !is_deleted? && name_changed? && tag.present?
+
+      if tag.category_name != "Artist" && tag.empty?
+        tag.update!(category: Tag.categories.artist)
       end
     end
   end
@@ -168,36 +172,32 @@ class Artist < ApplicationRecord
   module BanMethods
     def unban!
       Post.transaction do
-        CurrentUser.without_safe_mode do
-          ti = TagImplication.find_by(antecedent_name: name, consequent_name: "banned_artist")
-          ti&.destroy
+        ti = TagImplication.find_by(antecedent_name: name, consequent_name: "banned_artist")
+        ti&.destroy
 
-          Post.tag_match(name).find_each do |post|
-            post.unban!
-            fixed_tags = post.tag_string.sub(/(?:\A| )banned_artist(?:\Z| )/, " ").strip
-            post.update(tag_string: fixed_tags)
-          end
-
-          update_column(:is_banned, false)
-          ModAction.log("unbanned artist ##{id}", :artist_unban)
+        Post.raw_tag_match(name).find_each do |post|
+          post.unban!
+          fixed_tags = post.tag_string.sub(/(?:\A| )banned_artist(?:\Z| )/, " ").strip
+          post.update(tag_string: fixed_tags)
         end
+
+        update!(is_banned: false)
+        ModAction.log("unbanned artist ##{id}", :artist_unban)
       end
     end
 
     def ban!(banner: CurrentUser.user)
       Post.transaction do
-        CurrentUser.without_safe_mode do
-          Post.tag_match(name).each(&:ban!)
+        Post.raw_tag_match(name).each(&:ban!)
 
-          # potential race condition but unlikely
-          unless TagImplication.where(:antecedent_name => name, :consequent_name => "banned_artist").exists?
-            tag_implication = TagImplication.create!(antecedent_name: name, consequent_name: "banned_artist", skip_secondary_validations: true, creator: banner)
-            tag_implication.approve!(approver: banner)
-          end
-
-          update_column(:is_banned, true)
-          ModAction.log("banned artist ##{id}", :artist_ban)
+        # potential race condition but unlikely
+        unless TagImplication.where(:antecedent_name => name, :consequent_name => "banned_artist").exists?
+          tag_implication = TagImplication.create!(antecedent_name: name, consequent_name: "banned_artist", skip_secondary_validations: true, creator: banner)
+          tag_implication.approve!(banner)
         end
+
+        update!(is_banned: true)
+        ModAction.log("banned artist ##{id}", :artist_ban)
       end
     end
   end
@@ -222,6 +222,8 @@ class Artist < ApplicationRecord
     end
 
     def url_matches(query)
+      query = query.strip
+
       if query =~ %r!\A/(.*)/\z!
         where(id: ArtistUrl.where_regex(:url, $1).select(:artist_id))
       elsif query.include?("*")
@@ -234,6 +236,8 @@ class Artist < ApplicationRecord
     end
 
     def any_name_or_url_matches(query)
+      query = query.strip
+
       if query =~ %r!\Ahttps?://!i
         url_matches(query)
       else
@@ -262,12 +266,6 @@ class Artist < ApplicationRecord
         q = q.url_matches(params[:url_matches])
       end
 
-      if params[:has_tag].to_s.truthy?
-        q = q.where(name: Tag.nonempty.select(:name))
-      elsif params[:has_tag].to_s.falsy?
-        q = q.where.not(name: Tag.nonempty.select(:name))
-      end
-
       case params[:order]
       when "name"
         q = q.order("artists.name")
@@ -291,16 +289,12 @@ class Artist < ApplicationRecord
   include BanMethods
   extend SearchMethods
 
-  def status
-    if is_banned? && !is_deleted?
-      "Banned"
-    elsif is_banned?
-      "Banned Deleted"
-    elsif is_deleted?
-      "Deleted"
-    else
-      "Active"
-    end
+  def self.model_restriction(table)
+    super.where(table[:is_deleted].eq(false))
+  end
+
+  def self.searchable_includes
+    [:urls, :wiki_page, :tag_alias, :tag]
   end
 
   def self.available_includes

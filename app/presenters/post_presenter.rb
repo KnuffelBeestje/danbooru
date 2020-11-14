@@ -1,13 +1,13 @@
-class PostPresenter < Presenter
+class PostPresenter
   attr_reader :pool, :next_post_in_pool
   delegate :tag_list_html, :split_tag_list_html, :split_tag_list_text, :inline_tag_list_html, to: :tag_set_presenter
 
-  def self.preview(post, options = {})
+  def self.preview(post, show_deleted: false, tags: "", **options)
     if post.nil?
       return "<em>none</em>".html_safe
     end
 
-    if !options[:show_deleted] && post.is_deleted? && options[:tags] !~ /status:(?:all|any|deleted|banned)/ && !options[:raw]
+    if post.is_deleted? && !show_deleted
       return ""
     end
 
@@ -25,14 +25,14 @@ class PostPresenter < Presenter
 
     locals[:article_attrs] = {
       "id" => "post_#{post.id}",
-      "class" => preview_class(post, options).join(" ")
+      "class" => preview_class(post, **options).join(" ")
     }.merge(data_attributes(post))
 
     locals[:link_target] = options[:link_target] || post
 
     locals[:link_params] = {}
-    if options[:tags].present? && !CurrentUser.is_anonymous?
-      locals[:link_params]["q"] = options[:tags]
+    if tags.present? && !CurrentUser.is_anonymous?
+      locals[:link_params]["q"] = tags
     end
     if options[:pool_id]
       locals[:link_params]["pool_id"] = options[:pool_id]
@@ -43,7 +43,7 @@ class PostPresenter < Presenter
 
     locals[:tooltip] = "#{post.tag_string} rating:#{post.rating} score:#{post.score}"
 
-    locals[:cropped_url] = if Danbooru.config.enable_image_cropping && options[:show_cropped] && post.has_cropped? && !CurrentUser.user.disable_cropped_thumbnails?
+    locals[:cropped_url] = if options[:show_cropped] && post.has_cropped? && !CurrentUser.user.disable_cropped_thumbnails?
       post.crop_file_url
     else
       post.preview_file_url
@@ -51,7 +51,7 @@ class PostPresenter < Presenter
 
     locals[:preview_url] = post.preview_file_url
 
-    locals[:alt_text] = post.tag_string
+    locals[:alt_text] = "post ##{post.id}"
 
     locals[:has_cropped] = post.has_cropped?
 
@@ -116,6 +116,8 @@ class PostPresenter < Presenter
       "data-pools" => post.pool_string,
       "data-approver-id" => post.approver_id,
       "data-rating" => post.rating,
+      "data-large-width" => post.large_image_width,
+      "data-large-height" => post.large_image_height,
       "data-width" => post.image_width,
       "data-height" => post.image_height,
       "data-flags" => post.status_flags,
@@ -150,10 +152,6 @@ class PostPresenter < Presenter
     @tag_set_presenter ||= TagSetPresenter.new(@post.tag_array)
   end
 
-  def preview_html
-    PostPresenter.preview(@post)
-  end
-
   def humanized_essential_tag_string
     @humanized_essential_tag_string ||= tag_set_presenter.humanized_essential_tag_string(default: "##{@post.id}")
   end
@@ -167,7 +165,7 @@ class PostPresenter < Presenter
   end
 
   def has_sequential_navigation?(params)
-    return false if Tag.has_metatag?(params[:q], :order, :ordfav, :ordpool)
+    return false if PostQueryBuilder.new(params[:q]).has_metatag?(:order, :ordfav, :ordpool)
     return false if params[:pool_id].present? || params[:favgroup_id].present?
     return CurrentUser.user.enable_sequential_post_navigation
   end

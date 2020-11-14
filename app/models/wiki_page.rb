@@ -11,7 +11,6 @@ class WikiPage < ApplicationRecord
   validates_presence_of :title
   validates_presence_of :body, :unless => -> { is_deleted? || other_names.present? }
   validate :validate_rename
-  validate :validate_not_locked
 
   array_attribute :other_names
   has_one :tag, :foreign_key => "name", :primary_key => "title"
@@ -19,7 +18,6 @@ class WikiPage < ApplicationRecord
   has_many :versions, -> {order("wiki_page_versions.id ASC")}, :class_name => "WikiPageVersion", :dependent => :destroy
   has_many :dtext_links, as: :model, dependent: :destroy
 
-  api_attributes including: [:category_name]
   deletable
 
   module SearchMethods
@@ -50,12 +48,12 @@ class WikiPage < ApplicationRecord
       end
     end
 
-    def tag_matches(params)
-      where(title: Tag.search(params).select(:name).reorder(nil))
+    def linked_to(title)
+      where(dtext_links: DtextLink.wiki_page.wiki_link.where(link_target: normalize_title(title)))
     end
 
-    def linked_to(title)
-      where(id: DtextLink.wiki_page.wiki_link.where(link_target: title).select(:model_id))
+    def not_linked_to(title)
+      where.not(dtext_links: DtextLink.wiki_page.wiki_link.where(link_target: normalize_title(title)))
     end
 
     def default_order
@@ -76,12 +74,12 @@ class WikiPage < ApplicationRecord
         q = q.other_names_match(params[:other_names_match])
       end
 
-      if params[:tag].present?
-        q = q.tag_matches(params[:tag])
-      end
-
       if params[:linked_to].present?
         q = q.linked_to(params[:linked_to])
+      end
+
+      if params[:not_linked_to].present?
+        q = q.not_linked_to(params[:not_linked_to])
       end
 
       if params[:hide_deleted].to_s.truthy?
@@ -107,26 +105,13 @@ class WikiPage < ApplicationRecord
     end
   end
 
-  module ApiMethods
-    def html_data_attributes
-      super + [:category_name]
-    end
-  end
-
   extend SearchMethods
-  include ApiMethods
-
-  def validate_not_locked
-    if is_locked? && !CurrentUser.is_builder?
-      errors.add(:is_locked, "and cannot be updated")
-    end
-  end
 
   def validate_rename
     return unless title_changed?
 
     tag_was = Tag.find_by_name(Tag.normalize_name(title_was))
-    if tag_was.present? && tag_was.post_count > 0
+    if tag_was.present? && !tag_was.empty?
       warnings[:base] << %!Warning: {{#{title_was}}} still has #{tag_was.post_count} #{"post".pluralize(tag_was.post_count)}. Be sure to move the posts!
     end
 
@@ -154,6 +139,7 @@ class WikiPage < ApplicationRecord
   end
 
   def self.normalize_title(title)
+    return if title.blank?
     title.downcase.delete_prefix("~").gsub(/[[:space:]]+/, "_").gsub(/__/, "_").gsub(/\A_|_\z/, "")
   end
 
@@ -196,12 +182,12 @@ class WikiPage < ApplicationRecord
 
   def merge_version?
     prev = versions.last
-    prev && prev.updater_id == CurrentUser.user.id && prev.updated_at > 1.hour.ago
+    prev && prev.updater_id == CurrentUser.id && prev.updated_at > 1.hour.ago
   end
 
   def create_new_version
     versions.create(
-      :updater_id => CurrentUser.user.id,
+      :updater_id => CurrentUser.id,
       :updater_ip_addr => CurrentUser.ip_addr,
       :title => title,
       :body => body,
@@ -236,12 +222,30 @@ class WikiPage < ApplicationRecord
     TagAlias.to_aliased(titles & tags)
   end
 
+  def self.rewrite_wiki_links!(old_name, new_name)
+    broken_wikis = WikiPage.linked_to(old_name)
+
+    broken_wikis.each do |wiki|
+      wiki.lock!
+      wiki.body = DText.rewrite_wiki_links(wiki.body, old_name, new_name)
+      wiki.save!
+    end
+  end
+
   def to_param
     if title =~ /\A\d+\z/
       "~#{title}"
     else
       title
     end
+  end
+
+  def self.model_restriction(table)
+    super.where(table[:is_deleted].eq(false))
+  end
+
+  def self.searchable_includes
+    [:tag, :artist, :dtext_links]
   end
 
   def self.available_includes

@@ -40,19 +40,47 @@ div.list-of-forum-posts {
 }
 
 div#c-forum-topics {
-  span.new {
-    font-size: 80%;
-    color: var(--forum-new-topic-color);
-    margin-right: 0.5em;
+  td.status-column {
+    white-space: nowrap;
+    text-align: right;
   }
 
-  span.locked-topic {
-    color: var(--muted-text-color);
+  td.creator-column, td.updated-by-column {
+    white-space: nowrap;
   }
 
-  span.level-topic {
-    color: var(--forum-level-restricted-topic-color);
-    font-weight: bold;
+  .topic-status {
+    margin-right: 0.25em;
+    vertical-align: bottom;
+
+    &.label {
+      font-size: 0.7em;
+      text-transform: uppercase;
+      border-radius: 3px;
+      padding: 4px;
+      color: white;
+    }
+
+    &.icon {
+      color: var(--muted-text-color);
+      font-size: 1em;
+    }
+
+    &.new {
+      background-color: var(--forum-topic-status-new-color);
+    }
+
+    &.pending {
+      background-color: var(--forum-topic-status-pending-color);
+    }
+
+    &.approved {
+      background-color: var(--forum-topic-status-approved-color);
+    }
+
+    &.rejected {
+      background-color: var(--forum-topic-status-rejected-color);
+    }
   }
 
   #a-index {
@@ -60,7 +88,7 @@ div#c-forum-topics {
       white-space: nowrap;
     }
 
-    .updated-by-column, .updated-at-column {
+    .creator-column, .updated-by-column, .updated-at-column {
       @media screen and (max-width: 660px) {
         display: none;
       }

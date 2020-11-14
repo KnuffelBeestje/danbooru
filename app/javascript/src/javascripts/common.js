@@ -1,5 +1,4 @@
 import Cookie from './cookie'
-import CurrentUser from './current_user'
 
 $(function() {
   $("#hide-upgrade-account-notice").on("click.danbooru", function(e) {
@@ -16,16 +15,20 @@ $(function() {
     e.preventDefault();
   });
 
+  $("#hide-verify-account-notice").on("click.danbooru", function(e) {
+    $("#verify-account-notice").hide();
+    Cookie.put('hide_verify_account_notice', '1', 3);
+    e.preventDefault();
+  });
+
   $("#close-notice-link").on("click.danbooru", function(e) {
     $('#notice').fadeOut("fast");
     e.preventDefault();
   });
 
-  $("#desktop-version-link a").on("click.danbooru", async function(e) {
-    e.preventDefault();
-    await CurrentUser.update({ enable_desktop_mode: true });
-    location.reload();
-  });
+  if (location.hostname.endsWith("danbooru.me")) {
+    location.hostname = "danbooru.donmai.us";
+  }
 });
 
 window.submitInvisibleRecaptchaForm = function () {

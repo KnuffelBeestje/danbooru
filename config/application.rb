@@ -14,10 +14,22 @@ require "rails/test_unit/railtie"
 
 Bundler.require(*Rails.groups)
 
-require_relative "danbooru_default_config"
-require_relative "danbooru_local_config"
+begin
+  require_relative "danbooru_default_config"
+  require_relative "danbooru_local_config"
+rescue LoadError
+end
 
 module Danbooru
+  mattr_accessor :config
+
+  # if danbooru_local_config exists then use it as the config, otherwise use danbooru_default_config.
+  if defined?(CustomConfiguration)
+    self.config = EnvironmentConfiguration.new(CustomConfiguration.new)
+  else
+    self.config = EnvironmentConfiguration.new(Configuration.new)
+  end
+
   class Application < Rails::Application
     # Use the responders controller from the responders gem
     config.app_generators.scaffold_controller :responders_controller
@@ -50,7 +62,7 @@ module Danbooru
     if File.exist?("#{config.root}/REVISION")
       config.x.git_hash = File.read("#{config.root}/REVISION").strip
     elsif system("type git > /dev/null && git rev-parse --show-toplevel > /dev/null")
-      config.x.git_hash = `git rev-parse --short HEAD`.strip
+      config.x.git_hash = `git rev-parse HEAD`.strip
     else
       config.x.git_hash = nil
     end

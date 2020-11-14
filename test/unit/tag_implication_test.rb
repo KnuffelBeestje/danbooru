@@ -3,8 +3,8 @@ require 'test_helper'
 class TagImplicationTest < ActiveSupport::TestCase
   context "A tag implication" do
     setup do
-      user = FactoryBot.create(:admin_user)
-      CurrentUser.user = user
+      @admin = create(:admin_user)
+      CurrentUser.user = @admin
       CurrentUser.ip_addr = "127.0.0.1"
     end
 
@@ -24,7 +24,6 @@ class TagImplicationTest < ActiveSupport::TestCase
       should allow_value('deleted').for(:status)
       should allow_value('pending').for(:status)
       should allow_value('processing').for(:status)
-      should allow_value('queued').for(:status)
       should allow_value('error: derp').for(:status)
 
       should_not allow_value('ACTIVE').for(:status)
@@ -50,17 +49,6 @@ class TagImplicationTest < ActiveSupport::TestCase
 
         ti5.update(status: "active")
         assert_includes(ti5.errors[:antecedent_name], "has already been taken")
-      end
-    end
-
-    context "#update_notice" do
-      setup do
-        @forum_topic = FactoryBot.create(:forum_topic)
-      end
-
-      should "update the cache" do
-        FactoryBot.create(:tag_implication, antecedent_name: "aaa", consequent_name: "bbb", skip_secondary_validations: true, forum_topic: @forum_topic)
-        assert_equal(@forum_topic.id, Cache.get("tcn:aaa"))
       end
     end
 
@@ -146,8 +134,8 @@ class TagImplicationTest < ActiveSupport::TestCase
       ti1 = FactoryBot.create(:tag_implication, :antecedent_name => "aaa", :consequent_name => "xxx")
       ti2 = FactoryBot.create(:tag_implication, :antecedent_name => "aaa", :consequent_name => "yyy")
 
-      ti1.approve!
-      ti2.approve!
+      ti1.approve!(@admin)
+      ti2.approve!(@admin)
       perform_enqueued_jobs
 
       assert_equal("aaa bbb ccc xxx yyy", p1.reload.tag_string)
@@ -179,34 +167,6 @@ class TagImplicationTest < ActiveSupport::TestCase
         assert_equal([], TagImplication.tags_implied_by("b").map(&:name))
         assert_equal(["d"], TagImplication.tags_implied_by("c").map(&:name))
         assert_equal([], TagImplication.tags_implied_by("d").map(&:name))
-      end
-    end
-
-    context "with an associated forum topic" do
-      setup do
-        @topic = FactoryBot.create(:forum_topic, :title => "Tag implication: aaa -> bbb")
-        @post = FactoryBot.create(:forum_post, topic_id: @topic.id, :body => TagImplicationRequest.command_string("aaa", "bbb"))
-        @implication = FactoryBot.create(:tag_implication, :antecedent_name => "aaa", :consequent_name => "bbb", :forum_topic => @topic, :forum_post => @post, :status => "pending")
-      end
-
-      should "update the topic when processed" do
-        assert_difference("ForumPost.count") do
-          @implication.approve!
-          perform_enqueued_jobs
-        end
-
-        assert_match(/The tag implication .* has been approved/, @post.reload.body)
-        assert_equal("[APPROVED] Tag implication: aaa -> bbb", @topic.reload.title)
-      end
-
-      should "update the topic when rejected" do
-        assert_difference("ForumPost.count") do
-          @implication.reject!
-        end
-        @post.reload
-        @topic.reload
-        assert_match(/The tag implication .* has been rejected/, @post.body)
-        assert_equal("[REJECTED] Tag implication: aaa -> bbb", @topic.title)
       end
     end
   end

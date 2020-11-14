@@ -1,6 +1,4 @@
 module Danbooru
-  module_function
-
   class Configuration
     # A secret key used to encrypt session cookies, among other things. If this
     # token is changed, existing login sessions will become invalid. If this
@@ -25,9 +23,14 @@ module Danbooru
       "Danbooru"
     end
 
-    # The canonical hostname of the site.
+    # The canonical hostname for the site, e.g. danbooru.donmai.us.
     def hostname
       Socket.gethostname
+    end
+
+    # The canonical url for the site (e.g. https://danbooru.donmai.us)
+    def canonical_url
+      "https://#{hostname}"
     end
 
     # Contact email address of the admin.
@@ -47,26 +50,13 @@ module Danbooru
       "https://github.com/danbooru/danbooru"
     end
 
-    def commit_url(hash)
-      "#{source_code_url}/commit/#{hash}"
-    end
-
     def issues_url
       "#{source_code_url}/issues"
     end
 
-    # Set the default level, permissions, and other settings for new users here.
-    def customize_new_user(user)
-      # user.level = User::Levels::MEMBER
-      # user.can_approve_posts = false
-      # user.can_upload_free = false
-      #
-      # user.comment_threshold = -1
-      # user.blacklisted_tags = ["spoilers", "guro", "scat", "furry -rating:s"].join("\n")
-      # user.default_image_size = "large"
-      # user.per_page = 20
-      # user.disable_tagged_filenames = false
-      true
+    # An array of regexes containing disallowed usernames.
+    def user_name_blacklist
+      []
     end
 
     # Thumbnail size
@@ -94,19 +84,6 @@ module Danbooru
       6
     end
 
-    def tag_query_limit
-      if CurrentUser.user.present?
-        CurrentUser.user.tag_query_limit
-      else
-        base_tag_query_limit * 2
-      end
-    end
-
-    # Return true if the given tag shouldn't count against the user's tag search limit.
-    def is_unlimited_tag?(tag)
-      tag.match?(/\A(-?status:deleted|rating:s.*|limit:.+)\z/i)
-    end
-
     # After this many pages, the paginator will switch to sequential mode.
     def max_numbered_pages
       1_000
@@ -115,7 +92,7 @@ module Danbooru
     # Maximum size of an upload. If you change this, you must also change
     # `client_max_body_size` in your nginx.conf.
     def max_file_size
-      35.megabytes
+      50.megabytes
     end
 
     # Maximum resolution (width * height) of an upload. Default: 441 megapixels (21000x21000 pixels).
@@ -133,8 +110,9 @@ module Danbooru
       40000
     end
 
-    def member_comment_time_threshold
-      1.week.ago
+    # How long pending posts stay in the modqueue before being deleted.
+    def moderation_period
+      3.days
     end
 
     # https://guides.rubyonrails.org/action_mailer_basics.html#action-mailer-configuration
@@ -204,7 +182,6 @@ module Danbooru
           "category" => 0,
           "short" => "gen",
           "extra" => [],
-          "header" => %{<h1 class="general-tag-list">Tags</h1>},
           "relatedbutton" => "General",
           "css" => {
             "color" => "var(--general-tag-color)",
@@ -215,7 +192,6 @@ module Danbooru
           "category" => 4,
           "short" => "char",
           "extra" => ["ch"],
-          "header" => %{<h2 class="character-tag-list">Characters</h2>},
           "relatedbutton" => "Characters",
           "css" => {
             "color" => "var(--character-tag-color)",
@@ -226,7 +202,6 @@ module Danbooru
           "category" => 3,
           "short" => "copy",
           "extra" => ["co"],
-          "header" => %{<h2 class="copyright-tag-list">Copyrights</h2>},
           "relatedbutton" => "Copyrights",
           "css" => {
             "color" => "var(--copyright-tag-color)",
@@ -237,7 +212,6 @@ module Danbooru
           "category" => 1,
           "short" => "art",
           "extra" => [],
-          "header" => %{<h2 class="artist-tag-list">Artists</h2>},
           "relatedbutton" => "Artists",
           "css" => {
             "color" => "var(--artist-tag-color)",
@@ -248,7 +222,6 @@ module Danbooru
           "category" => 5,
           "short" => "meta",
           "extra" => [],
-          "header" => %{<h2 class="meta-tag-list">Meta</h2>},
           "relatedbutton" => nil,
           "css" => {
             "color" => "var(--meta-tag-color)",
@@ -262,12 +235,12 @@ module Danbooru
 
     # Sets the order of the split tag header list (presenters/tag_set_presenter.rb)
     def split_tag_header_list
-      @split_tag_header_list ||= ["copyright", "character", "artist", "general", "meta"]
+      @split_tag_header_list ||= ["artist", "copyright", "character", "general", "meta"]
     end
 
     # Sets the order of the categorized tag string (presenters/post_presenter.rb)
     def categorized_tag_list
-      @categorized_tag_list ||= ["copyright", "character", "artist", "meta", "general"]
+      @categorized_tag_list ||= ["artist", "copyright", "character", "meta", "general"]
     end
 
     # Sets the order of the related tag buttons (javascripts/related_tag.js)
@@ -298,23 +271,6 @@ module Danbooru
       []
     end
 
-    # Counting every post is typically expensive because it involves a sequential scan on
-    # potentially millions of rows. If this method returns a value, then blank searches
-    # will return that number for the fast_count call instead.
-    def blank_tag_search_fast_count
-      nil
-    end
-
-    # DeviantArt login cookies. Login to DeviantArt and extract these from the browser.
-    # https://github.com/danbooru/danbooru/issues/4219
-    def deviantart_cookies
-      {
-        userinfo: "XXX",
-        auth_secure: "XXX",
-        auth: "XXX"
-      }.to_json
-    end
-
     def pixiv_login
       nil
     end
@@ -339,6 +295,15 @@ module Danbooru
       nil
     end
 
+    # Register at https://www.deviantart.com/developers/
+    def deviantart_client_id
+      nil
+    end
+
+    def deviantart_client_secret
+      nil
+    end
+
     # http://tinysubversions.com/notes/mastodon-bot/
     def pawoo_client_id
       nil
@@ -354,15 +319,18 @@ module Danbooru
       nil
     end
 
-    # Should return true if the given tag should be suggested for removal in the post replacement dialog box.
-    def remove_tag_after_replacement?(tag)
-      tag =~ /\A(?:replaceme|.*_sample|resized|upscaled|downscaled|md5_mismatch|jpeg_artifacts|corrupted_image|source_request|non-web_source)\z/i
+    # A list of tags that should be removed when a post is replaced. Regexes allowed.
+    def post_replacement_tag_removals
+      %w[replaceme .*_sample resized upscaled downscaled md5_mismatch
+      jpeg_artifacts corrupted_image missing_image missing_sample missing_thumbnail
+      resolution_mismatch source_larger source_smaller source_request non-web_source]
     end
 
     # Posts with these tags will be highlighted in the modqueue.
     def modqueue_warning_tags
       %w[hard_translated self_upload nude_filter third-party_edit screencap
-      duplicate image_sample md5_mismatch resized upscaled downscaled]
+      duplicate image_sample md5_mismatch resized upscaled downscaled
+      resolution_mismatch source_larger source_smaller]
     end
 
     def stripe_secret_key
@@ -377,64 +345,24 @@ module Danbooru
     def twitter_api_secret
     end
 
-    # The default headers to be sent with outgoing http requests. Some external
-    # services will fail if you don't set a valid User-Agent.
-    def http_headers
-      {
-        "User-Agent" => "#{Danbooru.config.canonical_app_name}/#{Rails.application.config.x.git_hash}"
-      }
-    end
-
-    def httparty_options
-      # proxy example:
-      # {http_proxyaddr: "", http_proxyport: "", http_proxyuser: nil, http_proxypass: nil}
-      {
-        headers: Danbooru.config.http_headers
-      }
-    end
-
     # you should override this
     def email_key
       "zDMSATq0W3hmA5p3rKTgD"
     end
 
-    # For downloads, if the host matches any of these IPs, block it
-    def banned_ip_for_download?(ip_addr)
-      raise ArgumentError unless ip_addr.is_a?(IPAddr)
-
-      if ip_addr.ipv4?
-        if IPAddr.new("127.0.0.1") == ip_addr
-          true
-        elsif IPAddr.new("169.254.0.0/16").include?(ip_addr)
-          true
-        elsif IPAddr.new("10.0.0.0/8").include?(ip_addr)
-          true
-        elsif IPAddr.new("172.16.0.0/12").include?(ip_addr)
-          true
-        elsif IPAddr.new("192.168.0.0/16").include?(ip_addr)
-          true
-        else
-          false
-        end
-      elsif ip_addr.ipv6?
-        if IPAddr.new("::1") == ip_addr
-          true
-        elsif IPAddr.new("fe80::/10").include?(ip_addr)
-          true
-        elsif IPAddr.new("fd00::/8").include?(ip_addr)
-          true
-        else
-          false
-        end
-      else
-        false
-      end
+    # The url of the Discord server associated with this site.
+    def discord_server_url
+      nil
     end
 
-    def twitter_site
+    # The twitter username associated with this site (username only, don't include the @-sign).
+    def twitter_username
+      nil
     end
 
-    def addthis_key
+    def twitter_url
+      return nil unless Danbooru.config.twitter_username.present?
+      "https://twitter.com/#{Danbooru.config.twitter_username}"
     end
 
     # include essential tags in image urls (requires nginx/apache rewrites)
@@ -442,36 +370,21 @@ module Danbooru
       false
     end
 
-    # enable some (donmai-specific) optimizations for post counts
-    def estimate_post_counts
-      false
-    end
-
-    # disable this for tests
-    def enable_sock_puppet_validation?
-      true
-    end
-
-    # Enables recording of popular searches, missed searches, and post view
-    # counts. Requires Reportbooru to be configured and running - see below.
-    def enable_post_search_counts
-      false
-    end
-
-    # reportbooru options - see https://github.com/r888888888/reportbooru
+    # The URL for the Reportbooru server (https://github.com/evazion/reportbooru).
+    # Optional. Used for tracking post views, popular searches, and missed searches.
+    # Set to http://localhost/mock/reportbooru to enable a fake reportbooru
+    # server for development purposes.
     def reportbooru_server
     end
 
     def reportbooru_key
     end
 
-    # iqdbs options - see https://github.com/r888888888/iqdbs
+    # The URL for the IQDBs server (https://github.com/evazion/iqdbs).
+    # Optional. Used for dupe detection and reverse image searches.
+    # Set to http://localhost/mock/iqdbs to enable a fake iqdb server for
+    # development purposes.
     def iqdbs_server
-    end
-
-    # AWS config options
-    def aws_region
-      "us-east-1"
     end
 
     def aws_credentials
@@ -505,16 +418,37 @@ module Danbooru
     def recaptcha_secret_key
     end
 
-    def enable_image_cropping
-      true
-    end
-
     # Akismet API key. Used for Dmail spam detection. http://akismet.com/signup/
     def rakismet_key
     end
 
     def rakismet_url
       "https://#{hostname}"
+    end
+
+    # API key for https://ipregistry.co. Used for looking up IP address
+    # information and for detecting proxies during signup.
+    def ip_registry_api_key
+      nil
+    end
+
+    # The whitelist of email domains allowed for account verification purposes.
+    # If a user signs up from a proxy, they must verify their account using an
+    # email address from one of the domains on this list before they can do
+    # anything on the site. This is meant to prevent users from using
+    # disposable emails to create sockpuppet accounts.
+    #
+    # If this list is empty or nil, then there are no restrictions on which
+    # email domains can be used to verify accounts.
+    def email_domain_verification_list
+      # ["gmail.com", "outlook.com", "yahoo.com"]
+      []
+    end
+
+    # API key for Google Maps. Used for embedding maps on IP address lookup pages.
+    # Generate at https://console.developers.google.com/apis/credentials
+    def google_maps_api_key
+      nil
     end
 
     # Cloudflare API token. Used to purge URLs from Cloudflare's cache when a
@@ -527,6 +461,10 @@ module Danbooru
     def cloudflare_zone
     end
 
+    # The URL for the recommender server (https://github.com/evazion/recommender).
+    # Optional. Used to generate post recommendations.
+    # Set to http://localhost/mock/recommender to enable a fake recommender
+    # server for development purposes.
     def recommender_server
     end
 
@@ -535,19 +473,11 @@ module Danbooru
     end
   end
 
-  class EnvironmentConfiguration
-    def custom_configuration
-      @custom_configuration ||= CustomConfiguration.new
-    end
-
+  EnvironmentConfiguration = Struct.new(:config) do
     def method_missing(method, *args)
       var = ENV["DANBOORU_#{method.to_s.upcase.chomp("?")}"]
 
-      var.presence || custom_configuration.send(method, *args)
+      var.presence || config.send(method, *args)
     end
-  end
-
-  def config
-    @config ||= EnvironmentConfiguration.new
   end
 end

@@ -17,8 +17,7 @@ class User < ApplicationRecord
   # Used for `before_action :<role>_only`. Must have a corresponding `is_<role>?` method.
   Roles = Levels.constants.map(&:downcase) + [
     :banned,
-    :approver,
-    :voter
+    :approver
   ]
 
   # candidates for removal:
@@ -64,30 +63,23 @@ class User < ApplicationRecord
     opt_out_tracking
     no_flagging
     no_feedback
+    requires_verification
+    is_verified
   )
 
   has_bit_flags BOOLEAN_ATTRIBUTES, :field => "bit_prefs"
 
-  attr_accessor :password, :old_password
+  attr_reader :password
 
   after_initialize :initialize_attributes, if: :new_record?
   validates :name, user_name: true, on: :create
-  validates_uniqueness_of :email, :case_sensitive => false, :if => ->(rec) { rec.email.present? && rec.saved_change_to_email? }
   validates_length_of :password, :minimum => 5, :if => ->(rec) { rec.new_record? || rec.password.present?}
   validates_inclusion_of :default_image_size, :in => %w(large original)
   validates_inclusion_of :per_page, in: (1..PostSets::Post::MAX_PER_PAGE)
   validates_confirmation_of :password
   validates_presence_of :comment_threshold
-  validate :validate_ip_addr_is_not_banned, :on => :create
-  validate :validate_sock_puppets, :on => :create, :if => -> { Danbooru.config.enable_sock_puppet_validation? }
   before_validation :normalize_blacklisted_tags
-  before_validation :set_per_page
-  before_validation :normalize_email
-  before_create :encrypt_password_on_create
-  before_update :encrypt_password_on_update
   before_create :promote_to_admin_if_first_user
-  before_create :customize_new_user
-  has_many :artists, foreign_key: :creator_id
   has_many :artist_versions, foreign_key: :updater_id
   has_many :artist_commentary_versions, foreign_key: :updater_id
   has_many :comments, foreign_key: :creator_id
@@ -98,7 +90,6 @@ class User < ApplicationRecord
   has_many :forum_topic_visits, dependent: :destroy
   has_many :visited_forum_topics, through: :forum_topic_visits, source: :forum_topic
   has_many :moderation_reports, as: :model
-  has_many :pools, foreign_key: :creator_id
   has_many :posts, :foreign_key => "uploader_id"
   has_many :post_appeals, foreign_key: :creator_id
   has_many :post_approvals, :dependent => :destroy
@@ -111,10 +102,11 @@ class User < ApplicationRecord
 
   has_one :api_key
   has_one :token_bucket
-  has_many :notes, foreign_key: :creator_id
+  has_one :email_address, dependent: :destroy
   has_many :note_versions, :foreign_key => "updater_id"
   has_many :dmails, -> {order("dmails.id desc")}, :foreign_key => "owner_id"
   has_many :saved_searches
+  has_many :forum_topics, :foreign_key => "creator_id"
   has_many :forum_posts, -> {order("forum_posts.created_at, forum_posts.id")}, :foreign_key => "creator_id"
   has_many :user_name_change_requests, -> {order("user_name_change_requests.created_at desc")}
   has_many :favorite_groups, -> {order(name: :asc)}, foreign_key: :creator_id
@@ -124,6 +116,7 @@ class User < ApplicationRecord
   has_many :tag_implications, foreign_key: :creator_id
   belongs_to :inviter, class_name: "User", optional: true
 
+  accepts_nested_attributes_for :email_address, reject_if: :all_blank, allow_destroy: true
   enum theme: { light: 0, dark: 100 }, _suffix: true
 
   # UserDeletion#rename renames deleted users to `user_<1234>~`. Tildes
@@ -132,13 +125,9 @@ class User < ApplicationRecord
   scope :undeleted, -> { where("name !~ 'user_[0-9]+~*'") }
   scope :admins, -> { where(level: Levels::ADMIN) }
 
-  module BanMethods
-    def validate_ip_addr_is_not_banned
-      if IpBan.is_banned?(CurrentUser.ip_addr)
-        errors[:base] << "IP address is banned"
-      end
-    end
+  scope :has_blacklisted_tag, ->(name) { where_regex(:blacklisted_tags, "(^| )[~-]?#{Regexp.escape(name)}( |$)", flags: "ni") }
 
+  module BanMethods
     def unban!
       self.is_banned = false
       save
@@ -155,9 +144,14 @@ class User < ApplicationRecord
         find_by_name(name).try(:id)
       end
 
-      # XXX downcasing is the wrong way to do case-insensitive comparison for unicode (should use casefolding).
+      # XXX should casefold instead of lowercasing.
+      # XXX using lower(name) instead of ilike so we can use the index.
+      def name_matches(name)
+        where("lower(name) = ?", normalize_name(name)).limit(1)
+      end
+
       def find_by_name(name)
-        where_iequals(:name, normalize_name(name)).first
+        name_matches(name).first
       end
 
       def normalize_name(name)
@@ -170,96 +164,26 @@ class User < ApplicationRecord
     end
   end
 
-  module PasswordMethods
-    def bcrypt_password
-      BCrypt::Password.new(bcrypt_password_hash)
+  concerning :AuthenticationMethods do
+    def password=(new_password)
+      @password = new_password
+      self.bcrypt_password_hash = BCrypt::Password.create(hash_password(new_password))
     end
 
-    def bcrypt_cookie_password_hash
-      bcrypt_password_hash.slice(20, 100)
+    def authenticate_login_key(signed_user_id)
+      signed_user_id.present? && id == Danbooru::MessageVerifier.new(:login).verify(signed_user_id) && self
     end
 
-    def encrypt_password_on_create
-      self.bcrypt_password_hash = User.bcrypt(password)
+    def authenticate_api_key(key)
+      api_key.present? && ActiveSupport::SecurityUtils.secure_compare(api_key.key, key) && self
     end
 
-    def encrypt_password_on_update
-      return if password.blank?
-      return if old_password.blank?
-
-      if bcrypt_password == User.sha1(old_password)
-        self.bcrypt_password_hash = User.bcrypt(password)
-        return true
-      else
-        errors[:old_password] << "is incorrect"
-        return false
-      end
+    def authenticate_password(password)
+      BCrypt::Password.new(bcrypt_password_hash) == hash_password(password) && self
     end
 
-    def reset_password
-      consonants = "bcdfghjklmnpqrstvqxyz"
-      vowels = "aeiou"
-      pass = ""
-
-      6.times do
-        pass << consonants[rand(21), 1]
-        pass << vowels[rand(5), 1]
-      end
-
-      pass << rand(100).to_s
-      update_column(:bcrypt_password_hash, User.bcrypt(pass))
-      pass
-    end
-
-    def reset_password_and_deliver_notice
-      new_password = reset_password
-      Maintenance::User::PasswordResetMailer.confirmation(self, new_password).deliver_now
-    end
-  end
-
-  module AuthenticationMethods
-    extend ActiveSupport::Concern
-
-    module ClassMethods
-      def authenticate(name, pass)
-        authenticate_hash(name, sha1(pass))
-      end
-
-      def authenticate_api_key(name, api_key)
-        key = ApiKey.where(:key => api_key).first
-        return nil if key.nil?
-        user = find_by_name(name)
-        return nil if user.nil?
-        return user if key.user_id == user.id
-        nil
-      end
-
-      def authenticate_hash(name, hash)
-        user = find_by_name(name)
-        if user && user.bcrypt_password == hash
-          user
-        else
-          nil
-        end
-      end
-
-      def authenticate_cookie_hash(name, hash)
-        user = find_by_name(name)
-        if user && user.bcrypt_cookie_password_hash == hash
-          user
-        else
-          nil
-        end
-      end
-
-      def bcrypt(pass)
-        BCrypt::Password.create(sha1(pass))
-      end
-
-      def sha1(pass)
-        salt = "choujin-steiner"
-        Digest::SHA1.hexdigest("#{salt}--#{pass}--")
-      end
+    def hash_password(password)
+      Digest::SHA1.hexdigest("choujin-steiner--#{password}--")
     end
   end
 
@@ -331,16 +255,20 @@ class User < ApplicationRecord
       end
     end
 
-    def customize_new_user
-      Danbooru.config.customize_new_user(self)
-    end
-
     def level_string_was
       level_string(level_was)
     end
 
     def level_string(value = nil)
       User.level_string(value || level)
+    end
+
+    def is_deleted?
+      name.match?(/\Auser_[0-9]+~*\z/)
+    end
+
+    def is_restricted?
+      requires_verification? && !is_verified?
     end
 
     def is_anonymous?
@@ -371,30 +299,39 @@ class User < ApplicationRecord
       level >= Levels::ADMIN
     end
 
-    def is_voter?
-      is_gold?
-    end
-
     def is_approver?
       can_approve_posts?
-    end
-
-    def set_per_page
-      if per_page.nil? || !is_gold?
-        self.per_page = Danbooru.config.posts_per_page
-      end
     end
   end
 
   module EmailMethods
-    def normalize_email
-      self.email = nil if email.blank?
+    def email_with_name
+      "#{name} <#{email_address.address}>"
+    end
+
+    def can_receive_email?(require_verification: true)
+      email_address.present? && email_address.is_deliverable? && (email_address.is_verified? || !require_verification)
     end
   end
 
-  module BlacklistMethods
+  concerning :BlacklistMethods do
+    class_methods do
+      def rewrite_blacklists!(old_name, new_name)
+        has_blacklisted_tag(old_name).find_each do |user|
+          user.lock!
+          user.rewrite_blacklist(old_name, new_name)
+          user.save!
+        end
+      end
+    end
+
+    def rewrite_blacklist(old_name, new_name)
+      self.blacklisted_tags.gsub!(/(?:^| )([-~])?#{Regexp.escape(old_name)}(?: |$)/i) { " #{$1}#{new_name} " }
+    end
+
     def normalize_blacklisted_tags
-      self.blacklisted_tags = blacklisted_tags.downcase if blacklisted_tags.present?
+      return unless blacklisted_tags.present?
+      self.blacklisted_tags = self.blacklisted_tags.lines.map(&:strip).join("\n")
     end
   end
 
@@ -419,14 +356,6 @@ class User < ApplicationRecord
       end
     end
 
-    def can_comment?
-      if is_gold?
-        true
-      else
-        created_at <= Danbooru.config.member_comment_time_threshold
-      end
-    end
-
     def is_comment_limited?
       if is_gold?
         false
@@ -435,20 +364,24 @@ class User < ApplicationRecord
       end
     end
 
-    def can_comment_vote?
-      CommentVote.where("user_id = ? and created_at > ?", id, 1.hour.ago).count < 10
+    def is_appeal_limited?
+      return false if can_upload_free?
+      upload_limit.free_upload_slots < UploadLimit::APPEAL_COST
     end
 
-    def can_remove_from_pools?
-      created_at <= 1.week.ago
+    def is_flag_limited?
+      return false if has_unlimited_flags?
+      post_flags.active.count >= 5
     end
 
-    def can_view_flagger?(flagger_id)
-      is_moderator? || flagger_id == id
-    end
+    # Flags are unlimited if you're an approver or you have at least 30 flags
+    # in the last 3 months and have a 70% flag success rate.
+    def has_unlimited_flags?
+      return true if can_approve_posts?
 
-    def can_view_flagger_on_post?(flag)
-      (is_moderator? && flag.not_uploaded_by?(id)) || flag.creator_id == id
+      recent_flags = post_flags.where("created_at >= ?", 3.months.ago)
+      flag_ratio = recent_flags.succeeded.count / recent_flags.count.to_f
+      recent_flags.count >= 30 && flag_ratio >= 0.70
     end
 
     def upload_limit
@@ -526,30 +459,6 @@ class User < ApplicationRecord
   end
 
   module ApiMethods
-    def api_attributes
-      attributes = %i[
-        id created_at name inviter_id level
-        post_upload_count post_update_count note_update_count is_banned
-        can_approve_posts can_upload_free level_string
-      ]
-
-      if id == CurrentUser.user.id
-        attributes += BOOLEAN_ATTRIBUTES
-        attributes += %i[
-          updated_at email last_logged_in_at last_forum_read_at
-          comment_threshold default_image_size
-          favorite_tags blacklisted_tags time_zone per_page
-          custom_style favorite_count api_regen_multiplier
-          api_burst_limit remaining_api_limit statement_timeout
-          favorite_group_limit favorite_limit tag_query_limit
-          can_remove_from_pools? is_comment_limited?
-          can_comment? max_saved_searches theme
-        ]
-      end
-
-      attributes
-    end
-
     # extra attributes returned for /users/:id.json but not for /users.json.
     def full_attributes
       %i[
@@ -637,21 +546,13 @@ class User < ApplicationRecord
   end
 
   module SearchMethods
-    def with_email(email)
-      if email.blank?
-        where("FALSE")
-      else
-        where("email = ?", email)
-      end
-    end
-
     def search(params)
       q = super
 
       params = params.dup
       params[:name_matches] = params.delete(:name) if params[:name].present?
 
-      q = q.search_attributes(params, :name, :level, :inviter, :post_upload_count, :post_update_count, :note_update_count, :favorite_count)
+      q = q.search_attributes(params, :name, :level, :post_upload_count, :post_update_count, :note_update_count, :favorite_count)
 
       if params[:name_matches].present?
         q = q.where_ilike(:name, normalize_name(params[:name_matches]))
@@ -665,7 +566,7 @@ class User < ApplicationRecord
         q = q.where("level <= ?", params[:max_level].to_i)
       end
 
-      %w[can_approve_posts can_upload_free].each do |flag|
+      %w[can_approve_posts can_upload_free is_banned].each do |flag|
         if params[flag].to_s.truthy?
           q = q.bit_prefs_match(flag, true)
         elsif params[flag].to_s.falsy?
@@ -694,37 +595,14 @@ class User < ApplicationRecord
     end
   end
 
-  concerning :SockPuppetMethods do
-    def validate_sock_puppets
-      if User.where(last_ip_addr: CurrentUser.ip_addr).where("created_at > ?", 1.day.ago).exists?
-        errors.add(:last_ip_addr, "was used recently for another account and cannot be reused for another day")
-      end
-    end
-  end
-
   include BanMethods
-  include PasswordMethods
-  include AuthenticationMethods
   include LevelMethods
   include EmailMethods
-  include BlacklistMethods
   include ForumMethods
   include LimitMethods
   include ApiMethods
   include CountMethods
   extend SearchMethods
-
-  def as_current(&block)
-    CurrentUser.as(self, &block)
-  end
-
-  def reportable_by?(user)
-    ModerationReport.enabled? && user.is_builder? && id != user.id && !is_moderator?
-  end
-
-  def hide_favorites?
-    !CurrentUser.is_admin? && enable_private_favorites? && CurrentUser.user.id != id
-  end
 
   def initialize_attributes
     self.enable_post_navigation = true
@@ -740,6 +618,10 @@ class User < ApplicationRecord
 
   def dtext_shortlink(**options)
     "<@#{name}>"
+  end
+
+  def self.searchable_includes
+    [:posts, :note_versions, :artist_commentary_versions, :post_appeals, :post_approvals, :artist_versions, :comments, :wiki_page_versions, :feedback, :forum_topics, :forum_posts, :forum_post_votes, :tag_aliases, :tag_implications, :bans, :inviter]
   end
 
   def self.available_includes

@@ -22,16 +22,25 @@ class PostReplacement < ApplicationRecord
     class_methods do
       def search(params = {})
         q = super
-        q = q.search_attributes(params, :post, :creator, :md5, :md5_was, :file_ext, :file_ext_was, :original_url, :replacement_url)
+        q = q.search_attributes(params, :md5, :md5_was, :file_ext, :file_ext_was, :original_url, :replacement_url)
         q.apply_default_order(params)
       end
     end
   end
 
   def suggested_tags_for_removal
-    tags = post.tag_array.select { |tag| Danbooru.config.remove_tag_after_replacement?(tag) }
+    tags = post.tag_array.select do |tag|
+      Danbooru.config.post_replacement_tag_removals.any? do |pattern|
+        tag.match?(/\A#{pattern}\z/i)
+      end
+    end
+
     tags = tags.map { |tag| "-#{tag}" }
     tags.join(" ")
+  end
+
+  def self.searchable_includes
+    [:creator, :post]
   end
 
   def self.available_includes

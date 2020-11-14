@@ -2,6 +2,17 @@ class SavedSearch < ApplicationRecord
   REDIS_EXPIRY = 1.hour
   QUERY_LIMIT = 1000
 
+  attr_reader :disable_labels
+  belongs_to :user
+
+  before_validation :normalize_query
+  before_validation :normalize_labels
+  validates :query, presence: true
+  validate :validate_count, on: :create
+
+  scope :labeled, ->(label) { where_array_includes_any_lower(:labels, [normalize_label(label)]) }
+  scope :has_tag, ->(name) { where_regex(:query, "(^| )[~-]?#{Regexp.escape(name)}( |$)", flags: "i") }
+
   concerning :Redis do
     extend Memoist
 
@@ -14,12 +25,11 @@ class SavedSearch < ApplicationRecord
       memoize :redis
 
       def post_ids_for(user_id, label: nil)
-        label = normalize_label(label) if label
         queries = queries_for(user_id, label: label)
         post_ids = Set.new
         queries.each do |query|
           redis_key = "search:#{query}"
-          if redis.exists(redis_key)
+          if redis.exists?(redis_key)
             sub_ids = redis.smembers(redis_key).map(&:to_i)
             post_ids.merge(sub_ids)
           else
@@ -115,18 +125,16 @@ class SavedSearch < ApplicationRecord
       end
 
       def populate(query, timeout: 10_000)
-        CurrentUser.as_system do
-          redis_key = "search:#{query}"
-          return if redis.exists(redis_key)
+        redis_key = "search:#{query}"
+        return if redis.exists?(redis_key)
 
-          post_ids = Post.with_timeout(timeout, [], query: query) do
-            Post.tag_match(query).limit(QUERY_LIMIT).pluck(:id)
-          end
+        post_ids = Post.with_timeout(timeout, [], query: query) do
+          Post.system_tag_match(query).limit(QUERY_LIMIT).pluck(:id)
+        end
 
-          if post_ids.present?
-            redis.sadd(redis_key, post_ids)
-            redis.expire(redis_key, REDIS_EXPIRY.to_i)
-          end
+        if post_ids.present?
+          redis.sadd(redis_key, post_ids)
+          redis.expire(redis_key, REDIS_EXPIRY.to_i)
         end
       end
     end
@@ -135,41 +143,43 @@ class SavedSearch < ApplicationRecord
   concerning :Queries do
     class_methods do
       def queries_for(user_id, label: nil, options: {})
-        SavedSearch
-          .where(user_id: user_id)
-          .labeled(label)
-          .pluck(:query)
-          .map {|x| PostQueryBuilder.normalize_query(x, sort: true)}
-          .sort
-          .uniq
+        searches = SavedSearch.where(user_id: user_id)
+        searches = searches.labeled(label) if label.present?
+        queries = searches.map(&:normalized_query)
+        queries.sort.uniq
+      end
+
+      def rewrite_queries!(old_name, new_name)
+        has_tag(old_name).find_each do |ss|
+          ss.lock!
+          ss.rewrite_query(old_name, new_name)
+          ss.save!
+        end
       end
     end
 
     def normalized_query
-      PostQueryBuilder.normalize_query(query, sort: true)
+      PostQueryBuilder.new(query).normalized_query.to_s
     end
 
     def normalize_query
-      self.query = PostQueryBuilder.normalize_query(query, sort: false)
+      self.query = PostQueryBuilder.new(query).normalized_query(sort: false).to_s
+    end
+
+    def rewrite_query(old_name, new_name)
+      self.query.gsub!(/(?:\A| )([-~])?#{Regexp.escape(old_name)}(?: |\z)/i) { " #{$1}#{new_name} " }
+      self.query.strip!
     end
   end
 
-  attr_reader :disable_labels
-  belongs_to :user
-  validates :query, presence: true
-  validate :validate_count
-  before_validation :normalize_query
-  before_validation :normalize_labels
-  scope :labeled, ->(label) { label.present? ? where("labels @> string_to_array(?, '~~~~')", label) : where("true") }
-
   def validate_count
-    if user.saved_searches.count + 1 > user.max_saved_searches
+    if user.saved_searches.count >= user.max_saved_searches
       self.errors[:user] << "can only have up to #{user.max_saved_searches} " + "saved search".pluralize(user.max_saved_searches)
     end
   end
 
   def disable_labels=(value)
-    CurrentUser.update(disable_categorized_saved_searches: true) if value.to_s.truthy?
+    user.update(disable_categorized_saved_searches: true) if value.to_s.truthy?
   end
 
   def self.available_includes

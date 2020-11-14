@@ -27,7 +27,7 @@ class FavoriteGroup < ApplicationRecord
 
     def search(params)
       q = super
-      q = q.search_attributes(params, :name, :is_public, :post_ids, :creator)
+      q = q.search_attributes(params, :name, :is_public, :post_ids)
 
       if params[:name_matches].present?
         q = q.name_matches(params[:name_matches])
@@ -89,12 +89,16 @@ class FavoriteGroup < ApplicationRecord
     self.name = FavoriteGroup.normalize_name(name)
   end
 
-  def self.find_by_name_or_id(name, user)
+  def self.name_or_id_matches(name, user)
     if name =~ /\A\d+\z/
-      find_by(id: name)
+      where(id: name)
     else
-      user.favorite_groups.where_iequals(:name, normalize_name(name)).first
+      where(creator: user).where_iequals(:name, normalize_name(name))
     end
+  end
+
+  def self.find_by_name_or_id(name, user)
+    name_or_id_matches(name, user).first
   end
 
   def self.find_by_name_or_id!(name, user)
@@ -160,12 +164,8 @@ class FavoriteGroup < ApplicationRecord
     post_ids.include?(post_id)
   end
 
-  def editable_by?(user)
-    creator_id == user.id
-  end
-
-  def viewable_by?(user)
-    creator_id == user.id || is_public
+  def self.searchable_includes
+    [:creator]
   end
 
   def self.available_includes

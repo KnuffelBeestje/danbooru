@@ -1,23 +1,31 @@
-div#note-container {
-  position: absolute;
-  z-index: 50;
+.note-container {
+  display: inline-block;
+  position: relative;
+
+  &.hide-notes .note-box {
+    visibility: hidden;
+  }
 
   div.note-body {
+    display: none;
     position: absolute;
+    font-size: 14px;
     border: var(--note-body-border);
     background: var(--note-body-background);
     color: var(--note-body-text-color);
     min-width: 140px;
+    width: min-content;
     min-height: 1em;
     line-height: 1.25;
     cursor: pointer;
     padding: 4px;
     z-index: 150;
-    overflow: hidden;
+    overflow-wrap: break-word;
+    overflow-y: hidden;
   }
 
   div.note-body, div.note-box.embedded div.note-box-inner-border {
-    h1, h2, h3, h4, h5, h6, a, span, div, blockquote, br, p, ul, li, ol, em, strong, small, big, b, i, font, u, s, code, center {
+    h1, h2, h3, h4, h5, h6, a, span, div, blockquote, p, ul, li, ol, em, strong, small, big, b, i, font, u, s, code, center {
       line-height: 1.25;
     }
 
@@ -35,6 +43,10 @@ div#note-container {
 
     small {
       font-size: 0.8em;
+    }
+
+    code {
+      font: var(--monospace-font);
     }
 
     a[rel*="external"] {
@@ -71,31 +83,33 @@ div#note-container {
   }
 
   div.note-box {
-    position: absolute;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    position: absolute !important;
     border: var(--note-box-border);
     min-width: 5px;
     min-height: 5px;
     width: 100px;
     height: 100px;
     cursor: move;
-    background: var(--note-box-background);
+    background: var(--note-body-background);
     line-height: 1.25;
     opacity: 0.5;
+    z-index: 100;
 
-    div.note-box-inner-border {
-      border: var(--note-box-inner-border);
-      background: var(--note-body-background);
+    /* Raise notes on hover so overlapping embedded notes are readable. */
+    &:hover {
+      z-index: 200;
     }
 
-    div.note-box-inner-border.unsaved {
-      border: var(--unsaved-note-box-inner-border);
+    &.unsaved {
+      border: var(--unsaved-note-box-border);
     }
 
     &.movable {
-      div.note-box-inner-border,
-      div.note-box-inner-border.unsaved {
-        border: var(--movable-note-box-inner-border);
-      }
+      border: var(--movable-note-box-border);
     }
 
     &.embedded {
@@ -103,20 +117,13 @@ div#note-container {
       border: 1px solid transparent;
       opacity: 1;
 
-      &.hovering {
+      &:hover {
         border: var(--note-box-border);
+        box-shadow: var(--note-box-shadow);
 
         &.editing,
         &.movable {
           opacity: 1;
-        }
-
-        div.ui-resizable-handle {
-          display: block;
-        }
-
-        div.note-box-inner-border {
-          border: var(--note-box-inner-border);
         }
       }
 
@@ -125,43 +132,39 @@ div#note-container {
         opacity: 0.4;
       }
 
+      &.unsaved,
+      &.out-of-bounds {
+        border: var(--unsaved-note-box-border);
+      }
+
       &.movable {
-        div.note-box-inner-border,
-        div.note-box-inner-border.unsaved,
-        div.note-box-inner-border.out-of-bounds {
-          border: var(--movable-note-box-inner-border);
-        }
+        border: var(--movable-note-box-border);
       }
 
-      div.ui-resizable-handle {
-        display: none;
-      }
-
-      div.note-box-inner-border {
-        text-align: center;
-        display: table-cell;
-        vertical-align: middle;
-        border: 1px solid transparent;
-      }
-
-      div.note-box-inner-border.unsaved,
-      div.note-box-inner-border.out-of-bounds {
-        border: var(--unsaved-note-box-inner-border);
+      &:not(:hover) div.ui-resizable-handle {
+        display: none !important;
       }
     }
 
     &.note-box-highlighted {
       outline: 2px solid var(--note-highlight-color);
     }
+
+    div.ui-resizable-handle {
+      position: absolute;
+    }
   }
 }
 
+/* the box that appears when dragging to create a new note. */
 div#note-preview {
   position: absolute;
+  cursor: crosshair;
   border: var(--note-preview-border);
   opacity: 0.6;
   display: none;
   background: var(--note-preview-background);
+  z-index: 250;
 }
 
 div.note-edit-dialog {

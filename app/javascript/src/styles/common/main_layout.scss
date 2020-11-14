@@ -6,10 +6,6 @@ div#page {
   padding: 0 10px;
 
   aside#sidebar {
-    h1 {
-      font-size: $h3_size;
-    }
-
     #options-box i.fa-bookmark {
       margin-right: 0.25em;
     }
@@ -30,6 +26,12 @@ footer#page-footer {
   text-align: center;
   padding: 1em 0 1em;
   border-top: var(--footer-border);
+
+  .social-icon img {
+    vertical-align: bottom;
+    margin: 0 0.1em;
+    height: 16px;
+  }
 }
 
 .sidebar-container {

@@ -2,35 +2,10 @@ class TagAlias < TagRelationship
   after_save :create_mod_action
   validates_uniqueness_of :antecedent_name, scope: :status, conditions: -> { active }
   validate :absence_of_transitive_relation
-  validate :wiki_pages_present, on: :create, unless: :skip_secondary_validations
 
-  module ApprovalMethods
-    def approve!(approver: CurrentUser.user, update_topic: true)
-      update(approver: approver, status: "queued")
-      ProcessTagAliasJob.perform_later(self, update_topic: update_topic)
-    end
+  def approve!(approver)
+    ProcessTagAliasJob.perform_later(self, approver)
   end
-
-  module ForumMethods
-    def forum_updater
-      @forum_updater ||= begin
-        post = if forum_topic
-          forum_post || forum_topic.posts.where("body like ?", TagAliasRequest.command_string(antecedent_name, consequent_name, id) + "%").last
-        else
-          nil
-        end
-        ForumUpdater.new(
-          forum_topic,
-          forum_post: post,
-          expected_title: "Tag alias: #{antecedent_name} -> #{consequent_name}",
-          skip_update: !TagRelationship::SUPPORT_HARD_CODED
-        )
-      end
-    end
-  end
-
-  include ApprovalMethods
-  include ForumMethods
 
   def self.to_aliased(names)
     names = Array(names).map(&:to_s)
@@ -39,27 +14,13 @@ class TagAlias < TagRelationship
     names.map { |name| aliases[name] || name }
   end
 
-  def process!(update_topic: true)
-    unless valid?
-      raise errors.full_messages.join("; ")
-    end
-
-    CurrentUser.scoped(User.system) do
-      update!(status: "processing")
-      move_aliases_and_implications
-      move_saved_searches
-      ensure_category_consistency
-      update_posts
-      forum_updater.update(approval_message(approver), "APPROVED") if update_topic
-      rename_wiki_and_artist
-      update!(status: "active")
-    end
+  def process!(approver)
+    update!(approver: approver, status: "processing")
+    move_aliases_and_implications
+    TagMover.new(antecedent_name, consequent_name, user: User.system).move!
+    update!(status: "active")
   rescue Exception => e
-    CurrentUser.scoped(approver) do
-      forum_updater.update(failure_message(e), "FAILED") if update_topic
-      update(status: "error: #{e}")
-    end
-
+    update!(status: "error: #{e}")
     DanbooruLogger.log(e, tag_alias_id: id, antecedent_name: antecedent_name, consequent_name: consequent_name)
   end
 
@@ -70,15 +31,6 @@ class TagAlias < TagRelationship
     # If the a -> b alias was created first, the new one will be allowed and the old one will be moved automatically instead.
     if TagAlias.active.exists?(antecedent_name: consequent_name)
       errors[:base] << "A tag alias for #{consequent_name} already exists"
-    end
-  end
-
-  def move_saved_searches
-    escaped = Regexp.escape(antecedent_name)
-
-    SavedSearch.where("query like ?", "%#{antecedent_name}%").find_each do |ss|
-      ss.query = ss.query.sub(/(?:^| )#{escaped}(?:$| )/, " #{consequent_name} ").strip.gsub(/  /, " ")
-      ss.save
     end
   end
 
@@ -108,37 +60,6 @@ class TagAlias < TagRelationship
       if !success && ti.errors.full_messages.join("; ") =~ /Cannot implicate a tag to itself/
         ti.destroy
       end
-    end
-  end
-
-  def ensure_category_consistency
-    if antecedent_tag.category != consequent_tag.category && antecedent_tag.category != Tag.categories.general
-      consequent_tag.update_attribute(:category, antecedent_tag.category)
-    end
-  end
-
-  def rename_wiki_and_artist
-    antecedent_wiki = WikiPage.titled(antecedent_name).first
-    if antecedent_wiki.present?
-      if WikiPage.titled(consequent_name).blank?
-        antecedent_wiki.update!(title: consequent_name)
-      else
-        forum_updater.update(conflict_message)
-      end
-    end
-
-    if antecedent_tag.category == Tag.categories.artist
-      if antecedent_tag.artist.present? && consequent_tag.artist.blank?
-        antecedent_tag.artist.update!(name: consequent_name)
-      end
-    end
-  end
-
-  def wiki_pages_present
-    if antecedent_wiki.present? && consequent_wiki.present?
-      errors[:base] << conflict_message
-    elsif antecedent_wiki.blank? && consequent_wiki.blank?
-      errors[:base] << "The #{consequent_name} tag needs a corresponding wiki page"
     end
   end
 

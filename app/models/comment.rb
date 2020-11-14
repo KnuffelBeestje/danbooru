@@ -28,7 +28,7 @@ class Comment < ApplicationRecord
     def search(params)
       q = super
 
-      q = q.search_attributes(params, :post, :creator, :updater, :is_deleted, :is_sticky, :do_not_bump_post, :body, :score)
+      q = q.search_attributes(params, :is_deleted, :is_sticky, :do_not_bump_post, :body, :score)
       q = q.text_attribute_matches(:body, params[:body_matches], index_column: :body_index)
 
       case params[:order]
@@ -83,8 +83,6 @@ class Comment < ApplicationRecord
   def validate_creator_is_not_limited
     if creator.is_comment_limited? && !do_not_bump_post?
       errors.add(:base, "You can only post #{Danbooru.config.member_comment_limit} comments per hour")
-    elsif !creator.can_comment?
-      errors.add(:base, "You can not post comments within 1 week of sign up")
     end
   end
 
@@ -117,14 +115,6 @@ class Comment < ApplicationRecord
     end
   end
 
-  def editable_by?(user)
-    updater_id == user.id || user.is_moderator?
-  end
-
-  def reportable_by?(user)
-    creator_id != user.id && !creator.is_moderator?
-  end
-
   def voted_by?(user)
     return false if user.is_anonymous?
     user.id.in?(votes.map(&:user_id))
@@ -141,13 +131,16 @@ class Comment < ApplicationRecord
     select { |comment| comment.visibility(user) == :hidden }
   end
 
-  # XXX rename
-  def self.visible(user)
+  def self.unhidden(user)
     select { |comment| comment.visibility(user) == :visible }
   end
 
   def quoted_response
     DText.quote(body, creator.name)
+  end
+
+  def self.searchable_includes
+    [:post, :creator, :updater]
   end
 
   def self.available_includes

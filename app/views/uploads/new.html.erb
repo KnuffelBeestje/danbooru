@@ -1,5 +1,5 @@
 <div id="c-uploads">
-  <div id="a-new">
+  <div id="a-new" data-image-size="small">
     <h1>Upload</h1>
 
     <% if !CurrentUser.user.upload_limit.limited? %>
@@ -48,7 +48,6 @@
           <div class="artist-commentary" style="display: none;">
             <%= f.input :artist_commentary_title, as: :string, label: "Original Title", input_html: { size: 60, value: params[:artist_commentary_title] } %>
             <%= f.input :artist_commentary_desc, as: :text, label: "Original Description", input_html: { size: "60x5", value: params[:artist_commentary_desc] } %>
-            <%= f.input :include_artist_commentary, as: :boolean, label: "Include Commentary", input_html: { checked: params[:include_artist_commentary].present? } %>
           </div>
         </div>
 
@@ -66,11 +65,8 @@
           <div class="header">
             <%= f.label :tag_string, "Tags" %>
 
-            <span class="options">
-              <i id="face" class="fas"></i>
-              <span class="count"></span>
-              <a href="javascript:void(0)"><i id="open-edit-dialog" class="fas fa-arrows-alt" title="detach" data-shortcut="shift+e"></i></a>
-            </span>
+            <span data-tag-counter data-for="#upload_tag_string"></span>
+            <a href="javascript:void(0)"><i id="open-edit-dialog" class="fas fa-external-link-alt" title="detach" data-shortcut="shift+e"></i></a>
           </div>
 
           <%= f.input :tag_string, label: false, input_html: { size: "60x5", "data-autocomplete": "tag-edit", "data-shortcut": "e", spellcheck: false, value: params[:tag_string] } %>

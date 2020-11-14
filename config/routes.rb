@@ -13,9 +13,7 @@ Rails.application.routes.draw do
     namespace :post do
       resources :posts, :only => [:delete, :expunge, :confirm_delete] do
         member do
-          get :confirm_delete
           post :expunge
-          post :delete
           get :confirm_move_favorites
           post :move_favorites
           get :confirm_ban
@@ -45,9 +43,7 @@ Rails.application.routes.draw do
     namespace :user do
       resource :count_fixes, only: [:new, :create]
       resource :email_notification, :only => [:show, :destroy]
-      resource :password_reset, :only => [:new, :create, :edit, :update]
       resource :deletion, :only => [:show, :destroy]
-      resource :email_change, :only => [:new, :create]
       resource :api_key, :only => [:show, :view, :update, :destroy] do
         post :view
       end
@@ -65,12 +61,13 @@ Rails.application.routes.draw do
       get :banned
     end
   end
-  resources :artist_urls, only: [:index, :update]
+  resources :artist_urls, only: [:index]
   resources :artist_versions, :only => [:index, :show] do
     collection do
       get :search
     end
   end
+  resources :autocomplete, only: [:index]
   resources :bans
   resources :bulk_update_requests do
     member do
@@ -131,8 +128,8 @@ Rails.application.routes.draw do
     end
   end
   resources :forum_topic_visits, only: [:index]
-  resources :ip_bans
-  resources :ip_addresses, only: [:index]
+  resources :ip_bans, only: [:index, :new, :create, :update]
+  resources :ip_addresses, only: [:show, :index], id: /.+?(?=\.json|\.xml|\.html)|.+/
   resource :iqdb_queries, :only => [:show, :create] do
     collection do
       get :preview
@@ -153,6 +150,7 @@ Rails.application.routes.draw do
   end
   resources :note_versions, :only => [:index, :show]
   resource :note_previews, :only => [:show]
+  resource :password_reset, only: [:create, :show]
   resources :pixiv_ugoira_frame_data, only: [:index]
   resources :pools do
     member do
@@ -175,7 +173,7 @@ Rails.application.routes.draw do
   end
   resources :post_replacements, :only => [:index, :new, :create, :update]
   resources :post_votes, only: [:index]
-  resources :posts, only: [:index, :show, :update] do
+  resources :posts, only: [:index, :show, :update, :destroy] do
     resources :events, :only => [:index], :controller => "post_events"
     resources :replacements, :only => [:index, :new, :create], :controller => "post_replacements"
     resource :artist_commentary, :only => [:index, :show] do
@@ -217,8 +215,6 @@ Rails.application.routes.draw do
   end
   resources :artist_commentary_versions, :only => [:index, :show]
   resource :related_tag, :only => [:show, :update]
-  get "reports/uploads" => "reports#uploads"
-  get "reports/upload_tags" => "reports#upload_tags"
   resources :recommended_posts, only: [:index]
   resources :robots, only: [:index]
   resources :saved_searches, :except => [:show] do
@@ -246,7 +242,11 @@ Rails.application.routes.draw do
   end
   resources :users do
     resources :favorite_groups, controller: "favorite_groups", only: [:index], as: "favorite_groups"
-    resource :password, :only => [:edit], :controller => "maintenance/user/passwords"
+    resource :email, only: [:show, :edit, :update] do
+      get :verify
+      post :send_confirmation
+    end
+    resource :password, only: [:edit, :update]
     resource :api_key, :only => [:show, :view, :update, :destroy], :controller => "maintenance/user/api_keys" do
       post :view
     end
@@ -364,13 +364,24 @@ Rails.application.routes.draw do
   get "/wiki/recent_changes" => redirect {|params, req| "/wiki_page_versions?search[updater_id]=#{req.params[:user_id]}"}
   get "/wiki/history/:title" => redirect("/wiki_page_versions?title=%{title}")
 
-  get "/sitemap" => "static#sitemap"
+  get "/sitemap" => "static#sitemap_index"
+  get "/opensearch" => "static#opensearch", :as => "opensearch"
+  get "/privacy" => "static#privacy_policy", :as => "privacy_policy"
+  get "/terms_of_service" => "static#terms_of_service", :as => "terms_of_service"
   get "/static/keyboard_shortcuts" => "static#keyboard_shortcuts", :as => "keyboard_shortcuts"
   get "/static/bookmarklet" => "static#bookmarklet", :as => "bookmarklet"
   get "/static/site_map" => "static#site_map", :as => "site_map"
-  get "/static/terms_of_service" => "static#terms_of_service", :as => "terms_of_service"
   get "/static/contact" => "static#contact", :as => "contact"
   get "/static/dtext_help" => "static#dtext_help", :as => "dtext_help"
+  get "/static/terms_of_service" => redirect { "/terms_of_service" }
+
+  get "/mock/recommender/recommend/:user_id" => "mock_services#recommender_recommend", as: "mock_recommender_recommend"
+  get "/mock/recommender/similiar/:post_id" => "mock_services#recommender_similar", as: "mock_recommender_similar"
+  get "/mock/reportbooru/missed_searches" => "mock_services#reportbooru_missed_searches", as: "mock_reportbooru_missed_searches"
+  get "/mock/reportbooru/post_searches/rank" => "mock_services#reportbooru_post_searches", as: "mock_reportbooru_post_searches"
+  get "/mock/reportbooru/post_views/rank" => "mock_services#reportbooru_post_views", as: "mock_reportbooru_post_views"
+  get "/mock/iqdbs/similar" => "mock_services#iqdbs_similar", as: "mock_iqdbs_similar"
+  post "/mock/iqdbs/similar" => "mock_services#iqdbs_similar"
 
   root :to => "posts#index"
 

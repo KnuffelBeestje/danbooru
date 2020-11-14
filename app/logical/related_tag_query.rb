@@ -2,11 +2,12 @@ class RelatedTagQuery
   include ActiveModel::Serializers::JSON
   include ActiveModel::Serializers::Xml
 
-  attr_reader :query, :category, :type, :user, :limit
+  attr_reader :query, :post_query, :category, :type, :user, :limit
 
-  def initialize(query: nil, category: nil, type: nil, user: nil, limit: nil)
+  def initialize(query:, user: User.anonymous, category: nil, type: nil, limit: nil)
     @user = user
-    @query = TagAlias.to_aliased(query.to_s.downcase.strip).join(" ")
+    @post_query = PostQueryBuilder.new(query, user).normalized_query
+    @query = @post_query.to_s
     @category = category
     @type = type
     @limit = (limit =~ /^\d+/ ? limit.to_i : 25)
@@ -42,44 +43,12 @@ class RelatedTagQuery
     end
   end
 
-  def sample_count
-    if type == "frequent"
-      frequent_count
-    elsif type == "similar"
-      similar_count
-    elsif type == "like" || query =~ /\*/
-      0
-    elsif category.present?
-      frequent_count
-    elsif query.present?
-      similar_count
-    else
-      0
-    end
-  end
-
-  def frequent_tags_query
-    @frequent_tags_query ||= RelatedTagCalculator.frequent_tags_for_search(query, category: category_of).take(limit)
-  end
-
   def frequent_tags
-    frequent_tags_query[0]
-  end
-
-  def frequent_count
-    frequent_tags_query[1]
-  end
-
-  def similar_tags_query
-    @similar_tags_query ||= RelatedTagCalculator.similar_tags_for_search(query, category: category_of).take(limit)
+    @frequent_tags ||= RelatedTagCalculator.frequent_tags_for_search(post_query, category: category_of).take(limit)
   end
 
   def similar_tags
-    similar_tags_query[0]
-  end
-
-  def similar_count
-    similar_tags_query[1]
+    @similar_tags ||= RelatedTagCalculator.similar_tags_for_search(post_query, category: category_of).take(limit)
   end
 
   # Returns the top 20 most frequently added tags within the last 20 edits made by the user in the last hour.
@@ -88,7 +57,7 @@ class RelatedTagQuery
 
     versions = PostVersion.where(updater_id: user.id).where("updated_at > ?", since).order(id: :desc).limit(max_edits)
     tags = versions.flat_map(&:added_tags)
-    tags = tags.reject { |tag| Tag.is_metatag?(tag) }
+    tags = tags.reject { |tag| tag.match?(/\A(source:|parent:|rating:)/) }
     tags = tags.group_by(&:itself).transform_values(&:size).sort_by { |tag, count| [-count, tag] }.map(&:first)
     tags.take(max_tags)
   end
@@ -133,7 +102,6 @@ class RelatedTagQuery
     {
       query: query,
       category: category,
-      sample_count: sample_count,
       tags: tags_with_categories(tags.map(&:name)),
       tags_overlap: tags_overlap,
       wiki_page_tags: tags_with_categories(wiki_page_tags),

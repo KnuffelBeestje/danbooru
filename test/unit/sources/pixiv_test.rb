@@ -15,20 +15,7 @@ module Sources
 
     def get_source(source)
       @site = Sources::Strategies.find(source)
-
       @site
-    rescue Net::OpenTimeout
-      skip "Remote connection to #{source} failed"
-    end
-
-    def setup
-      super
-      load_pixiv_tokens!
-    end
-
-    def teardown
-      save_pixiv_tokens!
-      super
     end
 
     context "in all cases" do
@@ -83,17 +70,6 @@ module Sources
         end
       end
 
-      context "A https://www.pixiv.net/fanbox/creator/*/post/* source" do
-        should "work" do
-          @site = Sources::Strategies.find("http://www.pixiv.net/fanbox/creator/554149/post/82555")
-
-          assert_equal("TYONE(お仕事募集中)", @site.artist_name)
-          assert_equal("https://www.pixiv.net/member.php?id=554149", @site.profile_url)
-          assert_equal("https://fanbox.pixiv.net/images/post/82555/Lyyeb6dDLcQZmy09nqLZapuS.jpeg", @site.image_url)
-          assert_nothing_raised { @site.to_h }
-        end
-      end
-
       context "A https://www.pixiv.net/*/artworks/* source" do
         should "work" do
           @site = Sources::Strategies.find("https://www.pixiv.net/en/artworks/64476642")
@@ -114,11 +90,15 @@ module Sources
         end
 
         should "get the profile" do
-          assert_equal("https://www.pixiv.net/member.php?id=696859", @site.profile_url)
+          assert_equal("https://www.pixiv.net/users/696859", @site.profile_url)
         end
 
         should "get the artist name" do
           assert_equal("uroobnad", @site.artist_name)
+        end
+
+        should "get the remote image size" do
+          assert_equal(863_758, @site.remote_size)
         end
 
         should "get the full size image url" do
@@ -215,7 +195,7 @@ module Sources
         should "convert illust links and member links to dtext" do
           get_source("https://www.pixiv.net/member_illust.php?mode=medium&illust_id=63421642")
 
-          dtext_desc = %(foo 【pixiv #46337015 "»":[/posts?tags=pixiv:46337015]】bar 【pixiv #14901720 "»":[/posts?tags=pixiv:14901720]】\n\nbaz【"user/83739":[https://www.pixiv.net/member.php?id=83739] "»":[/artists?search%5Burl_matches%5D=https%3A%2F%2Fwww.pixiv.net%2Fmember.php%3Fid%3D83739]】)
+          dtext_desc = %(foo 【pixiv #46337015 "»":[/posts?tags=pixiv:46337015]】bar 【pixiv #14901720 "»":[/posts?tags=pixiv:14901720]】\n\nbaz【"user/83739":[https://www.pixiv.net/users/83739] "»":[/artists?search%5Burl_matches%5D=https%3A%2F%2Fwww.pixiv.net%2Fusers%2F83739]】)
           assert_equal(dtext_desc, @site.dtext_artist_commentary_desc)
         end
       end
@@ -307,24 +287,18 @@ module Sources
 
           assert_equal("uroobnad", source.tag_name)
           assert_equal(["uroobnad"], source.other_names)
-          assert_includes(source.profile_urls, "https://www.pixiv.net/member.php?id=696859")
+          assert_includes(source.profile_urls, "https://www.pixiv.net/users/696859")
           assert_includes(source.profile_urls, "https://www.pixiv.net/stacc/uroobnad")
         end
       end
 
       context "parsing illust ids" do
         should "parse ids from illust urls" do
-          assert_illust_id(46324488, "https://www.pixiv.net/member_illust.php?mode=medium&illust_id=46324488")
-          assert_illust_id(46324488, "https://www.pixiv.net/member_illust.php?mode=manga_big&illust_id=46324488&page=0")
-          assert_illust_id(46324488, "https://i.pximg.net/img-original/img/2014/10/03/18/10/20/46324488_p0.png")
-          assert_illust_id(46324488, "https://i.pximg.net/img-master/img/2014/10/03/18/10/20/46324488_p0_master1200.jpg")
-
           assert_illust_id(65015428, "https://tc-pximg01.techorus-cdn.com/img-original/img/2017/09/18/03/18/24/65015428_p4.png")
 
           assert_illust_id(46785915, "https://i.pximg.net/c/250x250_80_a2/img-master/img/2014/10/29/09/27/19/46785915_p0_square1200.jpg")
           assert_illust_id(79584713, "https://i-f.pximg.net/img-original/img/2020/02/19/00/40/18/79584713_p0.png")
 
-          assert_illust_id(46323924, "http://i1.pixiv.net/img-zip-ugoira/img/2014/10/03/17/29/16/46323924_ugoira1920x1080.zip")
           assert_illust_id(46304396, "http://i1.pixiv.net/img-original/img/2014/10/02/13/51/23/46304396_p0.png")
           assert_illust_id(46304396, "http://i1.pixiv.net/c/600x600/img-master/img/2014/10/02/13/51/23/46304396_p0_master1200.jpg")
 
@@ -343,11 +317,13 @@ module Sources
           assert_illust_id(18557054, "http://www.pixiv.net/artworks/18557054")
         end
 
-        should "not misparse ids from fanbox urls" do
-          assert_nil_illust_id("https://fanbox.pixiv.net/images/post/39714/JvjJal8v1yLgc5DPyEI05YpT.png")
-          assert_nil_illust_id("https://pixiv.pximg.net/fanbox/public/images/creator/1566167/profile/Ix6bnJmTaOAFZhXHLbWyIY1e.jpeg")
-          assert_nil_illust_id("https://pixiv.pximg.net/c/400x400_90_a2_g5/fanbox/public/images/creator/1566167/profile/Ix6bnJmTaOAFZhXHLbWyIY1e.jpeg")
-          assert_nil_illust_id("https://pixiv.pximg.net/c/1200x630_90_a2_g5/fanbox/public/images/post/186919/cover/VCI1Mcs2rbmWPg0mmiTisovn.jpeg")
+        should "parse ids from expicit/guro illust urls" do
+          assert_illust_id(46324488, "https://www.pixiv.net/member_illust.php?mode=medium&illust_id=46324488")
+          assert_illust_id(46324488, "https://www.pixiv.net/member_illust.php?mode=manga_big&illust_id=46324488&page=0")
+          assert_illust_id(46324488, "https://i.pximg.net/img-original/img/2014/10/03/18/10/20/46324488_p0.png")
+          assert_illust_id(46324488, "https://i.pximg.net/img-master/img/2014/10/03/18/10/20/46324488_p0_master1200.jpg")
+
+          assert_illust_id(46323924, "http://i1.pixiv.net/img-zip-ugoira/img/2014/10/03/17/29/16/46323924_ugoira1920x1080.zip")
         end
 
         should "not misparse ids from sketch urls" do
@@ -361,6 +337,22 @@ module Sources
           assert_nil_illust_id("https://i.pximg.net/c/600x600/novel-cover-master/img/2019/01/14/01/15/05/10617324_d84daae89092d96bbe66efafec136e42_master1200.jpg")
           assert_nil_illust_id("https://www.pixiv.net/novel/show.php?id=10617324")
         end
+      end
+    end
+
+    context "normalizing for source" do
+      should "normalize correctly" do
+        source1 = "http://i2.pixiv.net/img12/img/zenze/39749565.png"
+        source2 = "http://i1.pixiv.net/img53/img/themare/39735353_big_p1.jpg"
+        source3 = "http://i1.pixiv.net/c/150x150/img-master/img/2010/11/30/08/39/58/14901720_p0_master1200.jpg"
+        source4 = "http://i1.pixiv.net/img-original/img/2010/11/30/08/39/58/14901720_p0.png"
+        source5 = "http://i2.pixiv.net/img-zip-ugoira/img/2014/08/05/06/01/10/44524589_ugoira1920x1080.zip"
+
+        assert_equal("https://www.pixiv.net/artworks/39749565", Sources::Strategies.normalize_source(source1))
+        assert_equal("https://www.pixiv.net/artworks/39735353", Sources::Strategies.normalize_source(source2))
+        assert_equal("https://www.pixiv.net/artworks/14901720", Sources::Strategies.normalize_source(source3))
+        assert_equal("https://www.pixiv.net/artworks/14901720", Sources::Strategies.normalize_source(source4))
+        assert_equal("https://www.pixiv.net/artworks/44524589", Sources::Strategies.normalize_source(source5))
       end
     end
   end

@@ -34,7 +34,7 @@ class ModerationReport < ApplicationRecord
   def forum_topic
     topic = ForumTopic.find_by_title(forum_topic_title)
     if topic.nil?
-      CurrentUser.as_system do
+      CurrentUser.scoped(User.system) do
         topic = ForumTopic.create!(creator: User.system, title: forum_topic_title, category_id: 0, min_level: User::Levels::MODERATOR)
         forum_post = ForumPost.create!(creator: User.system, body: forum_topic_body, topic: topic)
       end
@@ -77,15 +77,20 @@ class ModerationReport < ApplicationRecord
     end
   end
 
-  def self.visible(user = CurrentUser.user)
+  def self.visible(user)
     user.is_moderator? ? all : none
   end
 
   def self.search(params)
     q = super
-    q = q.search_attributes(params, :model_type, :model_id, :creator_id)
+    q = q.search_attributes(params, :reason)
+    q = q.text_attribute_matches(:reason, params[:reason_matches])
 
     q.apply_default_order(params)
+  end
+
+  def self.searchable_includes
+    [:creator, :model]
   end
 
   def self.available_includes

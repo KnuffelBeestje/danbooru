@@ -1,29 +1,50 @@
 <%= table_for forum_topics, width: "100%" do |t| %>
   <% t.column "Title" do |topic| %>
-    <% if topic.is_sticky? %>
-      <span class="sticky">Sticky:</span>
-    <% end %>
-
     <% if !topic.is_read? %>
-      <span class="new">NEW</span>
+      <%= link_to forum_topics_path(search: { is_read: false }) do %>
+        <span class="topic-status label new">New</span>
+      <% end %>
     <% end %>
 
-    <%= link_to topic.title, forum_topic_path(topic), class: "forum-post-link" %>
+    <% if topic.is_sticky? %>
+      <%= link_to forum_topics_path(search: { is_sticky: true }) do %>
+        <i class="topic-status icon stickied fas fa-thumbtack" title="Stickied"></i>
+      <% end %>
+    <% end %>
+
+    <% if topic.is_locked? %>
+      <%= link_to forum_topics_path(search: { is_locked: true }) do %>
+        <i class="topic-status icon locked fas fa-lock" title="Locked"></i>
+      <% end %>
+    <% end %>
+
+    <% if topic.is_deleted? %>
+      <%= link_to forum_topics_path(search: { is_deleted: true }) do %>
+        <i class="topic-status icon deleted fas fa-trash-alt" title="Deleted"></i>
+      <% end %>
+    <% end %>
+
+    <% if topic.is_private? %>
+      <%= link_to forum_topics_path(search: { is_private: true }) do %>
+        <i class="topic-status icon private fas fa-hand-paper" title="<%= User.level_string(topic.min_level) %> only"></i>
+      <% end %>
+    <% end %>
+
+    <% if forum_topic_status(topic).present? %>
+      <%= link_to topic.pretty_title, forum_topic_path(topic), class: "forum-post-link" %>
+    <% else %>
+      <%= link_to topic.title, forum_topic_path(topic), class: "forum-post-link" %>
+    <% end %>
 
     <% if topic.response_count > Danbooru.config.posts_per_page %>
       <%= link_to "page #{topic.last_page}", forum_topic_path(topic, :page => topic.last_page), :class => "last-page" %>
     <% end %>
-
-    <% if topic.is_locked? %>
-      <span class="locked-topic">(locked)</span>
-    <% end %>
-
-    <% if topic.min_level > 0 %>
-      <span class="level-topic">(<%= User.level_string(topic.min_level).downcase %> only)</span>
-    <% end %>
   <% end %>
-  <% t.column "BURs", width: "20%" do |topic| %>
-    <%= bulk_update_request_counts(topic) %>
+  <% t.column "Status", width: "1%" do |topic| %>
+    <% status = forum_topic_status(topic) %>
+    <%= link_to forum_topics_path(search: { status: status }) do %>
+      <span class="topic-status label <%= status %>"><%= status %></span>
+    <% end %>
   <% end %>
   <% t.column "Creator", width: "8%" do |topic| %>
     <%= link_to_user topic.creator %>

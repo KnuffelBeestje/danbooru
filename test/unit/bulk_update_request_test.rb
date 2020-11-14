@@ -13,29 +13,284 @@ class BulkUpdateRequestTest < ActiveSupport::TestCase
       CurrentUser.ip_addr = nil
     end
 
-    context "#update_notice" do
-      setup do
-        @forum_topic = create(:forum_topic, creator: @admin)
+    should_eventually "parse tags with tag type prefixes inside the script" do
+      @bur = create(:bulk_update_request, script: "mass update aaa -> artist:bbb")
+      assert_equal(%w[aaa bbb], @bur.tags)
+    end
+
+    context "when approving a BUR" do
+      context "the category command" do
+        should "change the tag's category" do
+          @tag = create(:tag, name: "hello")
+          @bur = create(:bulk_update_request, script: "category hello -> artist")
+          @bur.approve!(@admin)
+
+          assert_equal(true, @bur.valid?)
+          assert_equal(true, @tag.reload.artist?)
+        end
+
+        should "fail if the tag doesn't already exist" do
+          @bur = build(:bulk_update_request, script: "category hello -> artist")
+
+          assert_equal(false, @bur.valid?)
+          assert_equal(["Can't change category hello -> artist (the 'hello' tag doesn't exist)"], @bur.errors[:base])
+        end
       end
 
-      should "update the cache" do
-        @script = "create alias aaa -> 000\n" +
-          "create implication bbb -> 111\n" +
-          "remove alias ccc -> 222\n" +
-          "remove implication ddd -> 333\n" +
-          "mass update eee -> 444\n"
-        FactoryBot.create(:bulk_update_request, script: @script, forum_topic: @forum_topic)
+      context "the create alias command" do
+        setup do
+          @wiki = create(:wiki_page, title: "foo")
+          @artist = create(:artist, name: "foo")
+          @bur = create(:bulk_update_request, script: "create alias foo -> bar")
 
-        assert_equal(@forum_topic.id, Cache.get("tcn:aaa"))
-        assert_equal(@forum_topic.id, Cache.get("tcn:000"))
-        assert_equal(@forum_topic.id, Cache.get("tcn:bbb"))
-        assert_equal(@forum_topic.id, Cache.get("tcn:111"))
-        assert_equal(@forum_topic.id, Cache.get("tcn:ccc"))
-        assert_equal(@forum_topic.id, Cache.get("tcn:222"))
-        assert_equal(@forum_topic.id, Cache.get("tcn:ddd"))
-        assert_equal(@forum_topic.id, Cache.get("tcn:333"))
-        assert_equal(@forum_topic.id, Cache.get("tcn:eee"))
-        assert_equal(@forum_topic.id, Cache.get("tcn:444"))
+          @bur.approve!(@admin)
+          perform_enqueued_jobs
+        end
+
+        should "create an alias" do
+          @alias = TagAlias.find_by(antecedent_name: "foo", consequent_name: "bar")
+          assert_equal(true, @alias.present?)
+          assert_equal(true, @alias.is_active?)
+        end
+
+        should "rename the aliased tag's artist entry and wiki page" do
+          assert_equal("bar", @artist.reload.name)
+          assert_equal("bar", @wiki.reload.title)
+        end
+
+        should "fail if the alias is invalid" do
+          create(:tag_alias, antecedent_name: "aaa", consequent_name: "bbb")
+          @bur = build(:bulk_update_request, script: "create alias bbb -> aaa")
+
+          assert_equal(false, @bur.valid?)
+          assert_equal(["Can't create alias bbb -> aaa (A tag alias for aaa already exists)"], @bur.errors.full_messages)
+        end
+
+        should "be case-insensitive" do
+          @bur = create(:bulk_update_request, script: "CREATE ALIAS AAA -> BBB")
+          @bur.approve!(@admin)
+          perform_enqueued_jobs
+
+          @alias = TagAlias.find_by(antecedent_name: "aaa", consequent_name: "bbb")
+          assert_equal(true, @alias.present?)
+          assert_equal(true, @alias.is_active?)
+        end
+      end
+
+      context "the create implication command" do
+        should "create an implication" do
+          @bur = create(:bulk_update_request, script: "create implication foo -> bar")
+          @bur.approve!(@admin)
+          perform_enqueued_jobs
+
+          @implication = TagImplication.find_by(antecedent_name: "foo", consequent_name: "bar")
+          assert_equal(true, @implication.present?)
+          assert_equal(true, @implication.is_active?)
+        end
+
+        should "fail for an implication that is redundant with an existing implication" do
+          create(:tag_implication, antecedent_name: "a", consequent_name: "b")
+          create(:tag_implication, antecedent_name: "b", consequent_name: "c")
+          @bur = build(:bulk_update_request, script: "imply a -> c")
+
+          assert_equal(false, @bur.valid?)
+          assert_equal(["Can't create implication a -> c (a already implies c through another implication)"], @bur.errors.full_messages)
+        end
+
+        should_eventually "fail for an implication that is redundant with another implication in the same BUR" do
+          create(:tag_implication, antecedent_name: "b", consequent_name: "c")
+          @bur = build(:bulk_update_request, script: "imply a -> b\nimply a -> c")
+
+          assert_equal(false, @bur.valid?)
+          assert_equal(["Can't create implication a -> c (a already implies c through another implication)"], @bur.errors.full_messages)
+        end
+      end
+
+      context "the remove alias command" do
+        should "remove an alias" do
+          create(:tag_alias, antecedent_name: "foo", consequent_name: "bar")
+          @bur = create(:bulk_update_request, script: "remove alias foo -> bar")
+          @bur.approve!(@admin)
+
+          @alias = TagAlias.find_by(antecedent_name: "foo", consequent_name: "bar")
+          assert_equal(true, @alias.present?)
+          assert_equal(true, @alias.is_deleted?)
+        end
+
+        should "fail if the alias isn't active" do
+          create(:tag_alias, antecedent_name: "foo", consequent_name: "bar", status: "pending")
+          @bur = build(:bulk_update_request, script: "remove alias foo -> bar")
+
+          assert_equal(false, @bur.valid?)
+          assert_equal(["Can't remove alias foo -> bar (alias doesn't exist)"], @bur.errors[:base])
+        end
+
+        should "fail if the alias doesn't already exist" do
+          @bur = build(:bulk_update_request, script: "remove alias foo -> bar")
+
+          assert_equal(false, @bur.valid?)
+          assert_equal(["Can't remove alias foo -> bar (alias doesn't exist)"], @bur.errors[:base])
+        end
+      end
+
+      context "the remove implication command" do
+        should "remove an implication" do
+          create(:tag_implication, antecedent_name: "foo", consequent_name: "bar", status: "active")
+          @bur = create(:bulk_update_request, script: "remove implication foo -> bar")
+          @bur.approve!(@admin)
+
+          @implication = TagImplication.find_by(antecedent_name: "foo", consequent_name: "bar")
+          assert_equal(true, @implication.present?)
+          assert_equal(true, @implication.is_deleted?)
+        end
+
+        should "fail if the implication isn't active" do
+          create(:tag_implication, antecedent_name: "foo", consequent_name: "bar", status: "pending")
+          @bur = build(:bulk_update_request, script: "remove implication foo -> bar")
+
+          assert_equal(false, @bur.valid?)
+          assert_equal(["Can't remove implication foo -> bar (implication doesn't exist)"], @bur.errors[:base])
+        end
+
+        should "fail if the implication doesn't already exist" do
+          @bur = build(:bulk_update_request, script: "remove implication foo -> bar")
+
+          assert_equal(false, @bur.valid?)
+          assert_equal(["Can't remove implication foo -> bar (implication doesn't exist)"], @bur.errors[:base])
+        end
+      end
+
+      context "the mass update command" do
+        setup do
+          @post = create(:post, tag_string: "foo")
+          @bur = create(:bulk_update_request, script: "mass update foo -> bar")
+          @bur.approve!(@admin)
+          perform_enqueued_jobs
+        end
+
+        should "update the tags" do
+          assert_equal("bar", @post.reload.tag_string)
+        end
+
+        should "be case-sensitive" do
+          @post = create(:post, source: "imageboard")
+          @bur = create(:bulk_update_request, script: "mass update source:imageboard -> source:Imageboard")
+
+          @bur.approve!(@admin)
+          perform_enqueued_jobs
+
+          assert_equal("Imageboard", @post.reload.source)
+        end
+      end
+
+      context "the rename command" do
+        setup do
+          @artist = create(:artist, name: "foo")
+          @wiki = create(:wiki_page, title: "foo", body: "[[foo]]")
+          @post = create(:post, tag_string: "foo blah")
+          @bur = create(:bulk_update_request, script: "rename foo -> bar")
+          @bur.approve!(@admin)
+          perform_enqueued_jobs
+        end
+
+        should "rename the tags" do
+          assert_equal("approved", @bur.status)
+          assert_equal("bar blah", @post.reload.tag_string)
+        end
+
+        should "move the tag's artist entry and wiki page" do
+          assert_equal("bar", @artist.reload.name)
+          assert_equal("bar", @wiki.reload.title)
+          assert_equal("[[bar]]", @wiki.body)
+        end
+
+        should "fail if the old tag doesn't exist" do
+          @bur = build(:bulk_update_request, script: "rename aaa -> bbb")
+
+          assert_equal(false, @bur.valid?)
+          assert_equal(["Can't rename aaa -> bbb (the 'aaa' tag doesn't exist)"], @bur.errors.full_messages)
+        end
+
+        context "when renaming a character tag with a *_(cosplay) tag" do
+          should "move the *_(cosplay) tag as well" do
+            @post = create(:post, tag_string: "toosaka_rin_(cosplay)")
+            @wiki = create(:wiki_page, title: "toosaka_rin_(cosplay)")
+            @ta = create(:tag_alias, antecedent_name: "toosaka_rin", consequent_name: "tohsaka_rin")
+
+            @bur = create(:bulk_update_request, script: "rename toosaka_rin -> tohsaka_rin")
+            @bur.approve!(@admin)
+            perform_enqueued_jobs
+
+            assert_equal("cosplay tohsaka_rin tohsaka_rin_(cosplay)", @post.reload.tag_string)
+            assert_equal("tohsaka_rin_(cosplay)", @wiki.reload.title)
+          end
+        end
+      end
+
+      context "that contains a mass update followed by an alias" do
+        should "make the alias take effect after the mass update" do
+          @bur = create(:bulk_update_request, script: "mass update maid_dress -> maid dress\nalias maid_dress -> maid")
+          @p1 = create(:post, tag_string: "maid_dress")
+          @p2 = create(:post, tag_string: "maid")
+
+          @bur.approve!(@admin)
+          perform_enqueued_jobs
+
+          assert_equal("dress maid", @p1.reload.tag_string)
+          assert_equal("maid", @p2.reload.tag_string)
+        end
+      end
+    end
+
+    context "when validating a script" do
+      context "an unparseable script" do
+        should "fail validation" do
+          @script = <<~EOS
+            create alias aaa -> 000
+            create alias bbb > 111
+            create alias ccc -> 222
+          EOS
+
+          @bur = build(:bulk_update_request, script: @script)
+          assert_equal(false, @bur.valid?)
+          assert_equal(["Invalid line: create alias bbb > 111"], @bur.errors[:base])
+        end
+      end
+
+      context "a script with extra whitespace" do
+        should "validate" do
+          @script = %{
+            create alias aaa -> 000 
+
+            create alias bbb -> 111 
+          }
+
+          @bur = create(:bulk_update_request, script: @script)
+          assert_equal(true, @bur.valid?)
+        end
+      end
+    end
+
+    context "when the script is updated" do
+      should "update the BUR's list of affected tags" do
+        create(:tag_alias, antecedent_name: "ccc", consequent_name: "222")
+        create(:tag_implication, antecedent_name: "ddd", consequent_name: "333")
+        create(:tag, name: "iii")
+
+        @script = <<~EOS
+          create alias aaa -> 000
+          create implication bbb -> 111
+          remove alias ccc -> 222
+          remove implication ddd -> 333
+          mass update eee id:1 -fff ~ggg hhh* -> 444 -555
+          category iii -> meta
+        EOS
+
+        @bur = create(:bulk_update_request, script: "create alias aaa -> bbb")
+        assert_equal(%w[aaa bbb], @bur.tags)
+
+        @bur.update!(script: @script)
+        assert_equal(%w(000 111 222 333 444 aaa bbb ccc ddd eee iii), @bur.tags)
       end
     end
 
@@ -89,67 +344,6 @@ class BulkUpdateRequestTest < ActiveSupport::TestCase
       assert_match(/zzz/, bur.forum_post.body)
     end
 
-    context "that has an invalid alias" do
-      setup do
-        @alias1 = create(:tag_alias, creator: @admin)
-        @req = FactoryBot.build(:bulk_update_request, :script => "create alias bbb -> aaa")
-      end
-
-      should "not validate" do
-        assert_difference("TagAlias.count", 0) do
-          @req.save
-        end
-        assert_equal(["Error: A tag alias for aaa already exists (create alias bbb -> aaa)"], @req.errors.full_messages)
-      end
-    end
-
-    context "for an implication that is redundant with an existing implication" do
-      should "not validate" do
-        FactoryBot.create(:tag_implication, :antecedent_name => "a", :consequent_name => "b")
-        FactoryBot.create(:tag_implication, :antecedent_name => "b", :consequent_name => "c")
-        bur = FactoryBot.build(:bulk_update_request, :script => "imply a -> c")
-        bur.save
-
-        assert_equal(["Error: a already implies c through another implication (create implication a -> c)"], bur.errors.full_messages)
-      end
-    end
-
-    context "for an implication that is redundant with another implication in the same BUR" do
-      setup do
-        FactoryBot.create(:tag_implication, :antecedent_name => "b", :consequent_name => "c")
-        @bur = FactoryBot.build(:bulk_update_request, :script => "imply a -> b\nimply a -> c")
-        @bur.save
-      end
-
-      should "not process" do
-        assert_no_difference("TagImplication.count") do
-          @bur.approve!(@admin)
-        end
-      end
-
-      should_eventually "not validate" do
-        assert_equal(["Error: a already implies c through another implication (create implication a -> c)"], @bur.errors.full_messages)
-      end
-    end
-
-    context "for a `category <tag> -> type` change" do
-      should "work" do
-        tag = Tag.find_or_create_by_name("tagme")
-        bur = FactoryBot.create(:bulk_update_request, :script => "category tagme -> meta")
-        bur.approve!(@admin)
-
-        assert_equal(Tag.categories.meta, tag.reload.category)
-      end
-
-      should "work for a new tag" do
-        bur = FactoryBot.create(:bulk_update_request, :script => "category new_tag -> meta")
-        bur.approve!(@admin)
-
-        assert_not_nil(Tag.find_by_name("new_tag"))
-        assert_equal(Tag.categories.meta, Tag.find_by_name("new_tag").category)
-      end
-    end
-
     context "with an associated forum topic" do
       setup do
         @topic = create(:forum_topic, title: "[bulk] hoge", creator: @admin)
@@ -158,13 +352,12 @@ class BulkUpdateRequestTest < ActiveSupport::TestCase
       end
 
       should "gracefully handle validation errors during approval" do
-        @req.stubs(:update!).raises(AliasAndImplicationImporter::Error.new("blah"))
+        @req.stubs(:update!).raises(BulkUpdateRequestProcessor::Error.new("blah"))
         assert_difference("ForumPost.count", 1) do
           @req.approve!(@admin)
         end
 
         assert_equal("pending", @req.reload.status)
-        assert_match(/\[FAILED\]/, @topic.reload.title)
       end
 
       should "leave the BUR pending if there is an unexpected error during approval" do
@@ -179,18 +372,12 @@ class BulkUpdateRequestTest < ActiveSupport::TestCase
         assert_equal("pending", @req.status)
       end
 
-      should "downcase the text" do
-        assert_equal("create alias aaa -> bbb", @req.script)
-      end
-
       should "update the topic when processed" do
         assert_difference("ForumPost.count") do
           @req.approve!(@admin)
         end
 
-        @topic.reload
-        @post.reload
-        assert_match(/\[APPROVED\]/, @topic.title)
+        assert_match(/approved/, @post.reload.body)
       end
 
       should "update the topic when rejected" do
@@ -200,9 +387,7 @@ class BulkUpdateRequestTest < ActiveSupport::TestCase
           @req.reject!(@admin)
         end
 
-        @topic.reload
-        @post.reload
-        assert_match(/\[REJECTED\]/, @topic.title)
+        assert_match(/rejected/, @post.reload.body)
       end
 
       should "reference the rejector in the automated message" do
